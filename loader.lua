@@ -669,17 +669,51 @@ local function launch(key, automatic)
         busy = false return
     end
     -- Compile before executing. A failed download is retried, never executed partially.
-    local fn, compileProblem
+    -- Some executors reject one call form (or the first call) of loadstring with a vague error such as
+    -- "Argument 1 missing or nil". Try the equivalent forms right away instead of waiting for a new download.
+    local function compileRuntime(text)
+        local forms, notes = {}, {}
+        local function add(label, f, withName)
+            if type(f) == "function" then forms[#forms + 1] = {label, f, withName} end
+        end
+        add("loadstring+name", loadstring, true)
+        add("loadstring", loadstring, false)
+        local okGlobal, globalEnv = pcall(getgenv)
+        local alt = okGlobal and type(globalEnv) == "table" and rawget(globalEnv, "loadstring") or nil
+        if alt ~= loadstring then add("getgenv+name", alt, true) add("getgenv", alt, false) end
+        for index, form in ipairs(forms) do
+            local ok, result, diagnostic
+            if form[3] then ok, result, diagnostic = pcall(form[2], text, "StudyHubLicensed")
+            else ok, result, diagnostic = pcall(form[2], text) end
+            if ok and type(result) == "function" then return result, form[1], notes end
+            notes[#notes + 1] = form[1] .. ": " .. tostring(ok and diagnostic or result):sub(1, 160)
+            if index < #forms then task.wait(0.2) end
+        end
+        -- Last resort: a fresh thread (some executors only accept the call from their own thread context).
+        local holder
+        pcall(task.spawn, function() holder = table.pack(pcall(loadstring, text)) end)
+        if holder and holder[1] and type(holder[2]) == "function" then return holder[2], "thread", notes end
+        notes[#notes + 1] = "thread: " .. tostring(holder and (holder[1] and holder[3] or holder[2]) or "sem resposta"):sub(1, 160)
+        return nil, nil, notes
+    end
+    local function executorName()
+        local ok, name = pcall(function()
+            if identifyexecutor then return table.concat({identifyexecutor()}, " ") end
+            return "unknown"
+        end)
+        return ok and tostring(name):sub(1, 60) or "?"
+    end
+    local fn, compileProblem, compileForm, compileNotes, compileTries
     for compileAttempt = 1, 3 do
         if not c:isValid() then busy = false return end
-        local ok, result, diagnostic = pcall(loadstring, source, "StudyHubLicensed")
-        if ok and type(result) == "function" then fn = result break end
-        compileProblem = tostring(ok and diagnostic or result):sub(1, 1200)
+        local result, how, notes = compileRuntime(source)
+        if result then fn, compileForm, compileNotes, compileTries = result, how, notes, compileAttempt break end
+        compileProblem = table.concat(notes, " | "):sub(1, 1200)
         warn("[StudyHub] Runtime compile attempt " .. compileAttempt .. ": " .. compileProblem)
         pcall(function()
             writefile("AriseStudyHub/loader-error.json", Http:JSONEncode({stage = "compile", attempt = compileAttempt,
                 placeId = game.PlaceId, gameId = game.GameId, utc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-                bytes = #source, message = compileProblem}))
+                executor = executorName(), bytes = #source, message = compileProblem}))
         end)
         if compileAttempt >= 3 then break end
         local untilAt = os.clock() + compileAttempt * 5
@@ -700,6 +734,18 @@ local function launch(key, automatic)
         c:stop("A hub recebida continua com erro de compilacao apos 3 tentativas. Detalhes: AriseStudyHub/loader-error.json.")
         busy = false return
     end
+    -- A stale error file from an earlier failed attempt would look like a current failure: remove it,
+    -- or keep a clearly labelled note when the hub only compiled through a fallback.
+    pcall(function()
+        if compileTries > 1 or compileForm ~= "loadstring+name" then
+            writefile("AriseStudyHub/loader-error.json", Http:JSONEncode({stage = "compile-recovered", form = compileForm,
+                attempt = compileTries, executor = executorName(), utc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                bytes = #source, message = table.concat(compileNotes, " | "):sub(1, 600),
+                earlier = compileProblem and compileProblem:sub(1, 600) or nil}))
+        elseif type(isfile) == "function" and type(delfile) == "function" and isfile("AriseStudyHub/loader-error.json") then
+            delfile("AriseStudyHub/loader-error.json")
+        end
+    end)
     local saved = pcall(function()
         local cache = readJson("AriseStudyHub/license.json") or {}
         cache.byGame = type(cache.byGame) == "table" and cache.byGame or {}
