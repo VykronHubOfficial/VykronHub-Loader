@@ -1,6 +1,39 @@
--- StudyHub MultiJogos: carregamento autorizado pelo servidor.
+-- VykronHub MultiJogos: carregamento autorizado pelo servidor.
 assert(type(readfile)=="function" and type(writefile)=="function", "Executor sem arquivos locais")
-if type(makefolder)=="function" then pcall(makefolder,"AriseStudyHub") end
+if type(makefolder)=="function" then pcall(makefolder,"VykronHub") end
+-- Migra a pasta antiga (AriseStudyHub -> VykronHub) uma unica vez, para ninguem perder
+-- key salva, perfis ou preferencias so por causa da troca de nome.
+pcall(function()
+    if type(isfolder) ~= "function" or type(listfiles) ~= "function" then return end
+    local okOld, temAntiga = pcall(isfolder, "AriseStudyHub")
+    if not okOld or not temAntiga then return end
+    local okNewList, novaLista = pcall(listfiles, "VykronHub")
+    if okNewList and type(novaLista) == "table" and #novaLista > 0 then return end -- ja migrado (ou ja em uso)
+    local function copiarArquivo(origem, destino)
+        local okRead, conteudo = pcall(readfile, origem)
+        if okRead then pcall(writefile, destino, conteudo) end
+    end
+    local okList, entradas = pcall(listfiles, "AriseStudyHub")
+    if not okList or type(entradas) ~= "table" then return end
+    for _, caminho in ipairs(entradas) do
+        local nome = caminho:match("([^/\\]+)[/\\]?$")
+        if nome then
+            local okIsPasta, ehPasta = pcall(isfolder, caminho)
+            if okIsPasta and ehPasta then
+                pcall(makefolder, "VykronHub/" .. nome)
+                local okSub, subEntradas = pcall(listfiles, caminho)
+                if okSub and type(subEntradas) == "table" then
+                    for _, subCaminho in ipairs(subEntradas) do
+                        local subNome = subCaminho:match("([^/\\]+)$")
+                        if subNome then copiarArquivo(subCaminho, "VykronHub/" .. nome .. "/" .. subNome) end
+                    end
+                end
+            else
+                copiarArquivo(caminho, "VykronHub/" .. nome)
+            end
+        end
+    end
+end)
 local source=[=====[
 -- Vykron Hub licensed loader. No Discord/GitHub/admin secrets belong in this file.
 local resume = ...
@@ -77,8 +110,8 @@ if player.UserId ~= userId then return nil end
 originGameId = tostring(originGameId or game.GameId)
 local env = getgenv()
 local function enabled()
-    local path = originGameId == "7074860883" and ("AriseStudyHub/" .. userId .. ".json")
-        or ("AriseStudyHub/Profiles/" .. originGameId .. "_" .. userId .. ".json")
+    local path = originGameId == "7074860883" and ("VykronHub/" .. userId .. ".json")
+        or ("VykronHub/Profiles/" .. originGameId .. "_" .. userId .. ".json")
     local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(readfile(path)) end)
     if not ok or type(data) ~= "table" or data.userId ~= userId then return false end
     local h = data.houses
@@ -99,9 +132,9 @@ local session = {version = "multi-1", originGameId = originGameId, queued = fals
 env.__AriseAutoSession = session
 function session.arm()
     if session.queued or not enabled() then return end
-    local auth = env.__StudyHubLicense
+    local auth = env.__VykronHubLicense
     if auth and not auth:isValid() then return end
-    local source = string.format('assert(loadstring(readfile("AriseStudyHub/AutoExecute.luau")))(%s, true, %q)', tostring(userId), originGameId)
+    local source = string.format('assert(loadstring(readfile("VykronHub/AutoExecute.luau")))(%s, true, %q)', tostring(userId), originGameId)
     local ok, problem = pcall(queue, source)
     session.queued, session.problem = ok, not ok and tostring(problem) or nil
 end
@@ -113,12 +146,12 @@ session.connection = player.OnTeleport:Connect(function(status)
         session.arm()
     end
 end)
-if resume and env.__StudyHubResumeJob ~= game.JobId then
-    env.__StudyHubResumeJob = game.JobId
+if resume and env.__VykronHubResumeJob ~= game.JobId then
+    env.__VykronHubResumeJob = game.JobId
     local ok, problem = pcall(function()
-        assert(loadstring(readfile("AriseStudyHub/Loader.luau")))(true)
+        assert(loadstring(readfile("VykronHub/Loader.luau")))(true)
     end)
-    if not ok then warn("[StudyHub] Nao foi possivel abrir o loader: " .. tostring(problem)) end
+    if not ok then warn("[VykronHub] Nao foi possivel abrir o loader: " .. tostring(problem)) end
 end
 return session
 ]====]
@@ -131,7 +164,7 @@ local function validDevice(s)
     return type(s) == "string" and #s >= 32 and #s <= 128 and not s:find("[^%w_-]")
 end
 local function getDevice()
-    local path = "AriseStudyHub/device.txt"
+    local path = "VykronHub/device.txt"
     local ok, value = pcall(readfile, path)
     if ok and validDevice(value) then return value end
     -- Do not silently replace an existing invalid identifier: that would trigger a new binding.
@@ -142,26 +175,26 @@ local function getDevice()
     assert(readfile(path) == valueNew, "Nao foi possivel salvar o dispositivo")
     return valueNew
 end
-local old = env.__StudyHubLicense
+local old = env.__VykronHubLicense
 if old and type(old.stop) == "function" then old:stop(nil, true) end
-local previousOther = env.__StudyHubRuntime
+local previousOther = env.__VykronHubRuntime
 if previousOther and type(previousOther.destroy) == "function" then pcall(previousOther.destroy) end
-local previous = env.__AriseStudyHub
+local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then pcall(previous.destroy) end
 local previousAuto = env.__AriseAutoSession
 if previousAuto and previousAuto.connection then previousAuto.connection:Disconnect() end
 env.__AriseAutoSession = nil
-local oldUI = env.__StudyHubKeyGui
+local oldUI = env.__VykronHubKeyGui
 if oldUI then pcall(function() oldUI:Destroy() end) end
 
 -- LOADER SILENT-1
 local gui = Instance.new("ScreenGui")
-gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "StudyHubKey", false, 11000
+gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "VykronHubKey", false, 11000
 -- Decide whether to show before parenting: saved-key checks must not flash on screen.
 gui.Enabled = false
 -- VYKRON-ATTACH-UI-FIX-1: ordinary player-owned GUI; no elevated capability required.
 gui.Parent = player:WaitForChild("PlayerGui")
-env.__StudyHubKeyGui = gui
+env.__VykronHubKeyGui = gui
 local cyan = Color3.fromRGB(0, 213, 222)
 local muted = Color3.fromRGB(140, 164, 183)
 local function create(class, parent, props)
@@ -206,7 +239,7 @@ local logo = create("Frame", panel, {Position = UDim2.fromOffset(24, 23), Size =
     BackgroundColor3 = Color3.fromRGB(11, 43, 59), BorderSizePixel = 0})
 round(logo, 10)
 local logoFallback = label(logo, "S", 0, 0, 44, 44, 31, cyan, true)
-local logoArt = artwork(logo, "StudyHubLogo", "128145399327530", 0, 0, 44, 44)
+local logoArt = artwork(logo, "VykronHubLogo", "128145399327530", 0, 0, 44, 44)
 hideFallbackWhenLoaded(logoArt, logoFallback)
 local title = label(panel, "VYKRON HUB", 82, 23, 210, 25, 21, nil, true)
 title.TextXAlignment = Enum.TextXAlignment.Left
@@ -252,7 +285,7 @@ local pupil = create("Frame", eyeOval, {Position = UDim2.fromOffset(8, 4), Size 
 round(pupil, 8)
 local slash = create("Frame", eye, {Position = UDim2.fromOffset(4, 17), Size = UDim2.fromOffset(28, 2),
     Rotation = -40, BackgroundColor3 = cyan, BorderSizePixel = 0})
-local preferences = readJson("AriseStudyHub/loader-ui.json") or {}
+local preferences = readJson("VykronHub/loader-ui.json") or {}
 local hideKey = preferences.hideKey ~= false
 local eyeOpenArt = artwork(eye, "ShowKeyIcon", "123741328806608", 2, 2, 32, 32)
 local eyeHiddenArt = artwork(eye, "HideKeyIcon", "121852765919539", 2, 2, 32, 32)
@@ -279,8 +312,8 @@ eye.Activated:Connect(function()
     hideKey = not hideKey
     updateKeyMask()
     local saved = pcall(function()
-        if type(makefolder) == "function" then pcall(makefolder, "AriseStudyHub") end
-        writefile("AriseStudyHub/loader-ui.json", Http:JSONEncode({hideKey = hideKey}))
+        if type(makefolder) == "function" then pcall(makefolder, "VykronHub") end
+        writefile("VykronHub/loader-ui.json", Http:JSONEncode({hideKey = hideKey}))
     end)
     if not saved then status.Text = "Preferência aplicada nesta sessão; não foi possível salvar." end
 end)
@@ -319,16 +352,16 @@ local busy = false
 local Controller = {}
 Controller.__index = Controller
 function Controller:isValid()
-    return self.active and env.__StudyHubLicense == self and os.clock() < self.deadline
+    return self.active and env.__VykronHubLicense == self and os.clock() < self.deadline
 end
 function Controller:attach(callback)
     assert(self:isValid(), "Licenca sem sessao valida")
     assert(type(callback) == "function", "Runtime sem encerramento valido")
     self.destroyHub = callback
     -- Attach the newly registered runtime, not the retired monolithic handle.
-    local registeredHub = env.__AriseStudyHub
+    local registeredHub = env.__VykronHub
     if type(registeredHub) == "table" and type(registeredHub.destroy) == "function" then
-        self.boundHub, self.hubSlot = registeredHub, "__AriseStudyHub"
+        self.boundHub, self.hubSlot = registeredHub, "__VykronHub"
     end
     -- A runtime may keep running after registering its UI and cleanup handle.
     -- Readiness is independent from the return of the downloaded main function.
@@ -336,11 +369,11 @@ function Controller:attach(callback)
         -- Only a runtime that actually registered may enable quiet future starts.
         -- This local preference never grants a license; every start still calls the server.
         pcall(function()
-            local cache = readJson("AriseStudyHub/license.json")
+            local cache = readJson("VykronHub/license.json")
             if type(cache) ~= "table" or Policy.savedKey(cache, game.GameId) ~= self.key then return end
             cache.confirmedByGame = type(cache.confirmedByGame) == "table" and cache.confirmedByGame or {}
             cache.confirmedByGame[tostring(game.GameId)] = self.key
-            writefile("AriseStudyHub/license.json", Http:JSONEncode(cache))
+            writefile("VykronHub/license.json", Http:JSONEncode(cache))
         end)
     end
     self.ready = true
@@ -361,12 +394,12 @@ function Controller:stop(message, silent)
     local callback = self.destroyHub
     self.destroyHub = nil
     if callback then pcall(callback) end
-    if env.__StudyHubLicense == self then env.__StudyHubLicense = nil end
+    if env.__VykronHubLicense == self then env.__VykronHubLicense = nil end
     -- Keep profile settings unchanged; expire only the current execution.
     if not silent then show(message or "Sessao encerrada. Valide a key novamente.") end
 end
 function Controller:accept(reply, startedAt)
-    if not self.active or env.__StudyHubLicense ~= self then return false end
+    if not self.active or env.__VykronHubLicense ~= self then return false end
     local timing = Policy.accept(reply, startedAt, os.clock())
     if not timing then return false end
     self.token, self.deadline, self.renewAt = timing.token, timing.deadline, timing.renewAt
@@ -387,19 +420,19 @@ function Controller:getLicenseRemaining()
 end
 -- LOADER TRANSPORT: bounded waits, discarded late replies, no credentials in diagnostics.
 local function loaderPresent()
-    return gui.Parent ~= nil and env.__StudyHubKeyGui == gui
+    return gui.Parent ~= nil and env.__VykronHubKeyGui == gui
 end
 function Controller:setAutoExecute(enabled)
     if self.hubId == "arise" then error("Use a opcao Misc da hub Arise") end
     assert(self:isValid(), "Sessao encerrada")
     assert(type(enabled) == "boolean", "Opcao invalida")
-    if type(makefolder) == "function" then pcall(makefolder, "AriseStudyHub/Profiles") end
-    local path = "AriseStudyHub/Profiles/" .. self.gameId .. "_" .. player.UserId .. ".json"
+    if type(makefolder) == "function" then pcall(makefolder, "VykronHub/Profiles") end
+    local path = "VykronHub/Profiles/" .. self.gameId .. "_" .. player.UserId .. ".json"
     local profile = readJson(path) or {}
     profile.userId, profile.autoExecute = player.UserId, enabled
     writefile(path, Http:JSONEncode(profile))
     if enabled then
-        return assert(loadstring(readfile("AriseStudyHub/AutoExecute.luau")))(player.UserId, false, self.gameId)
+        return assert(loadstring(readfile("VykronHub/AutoExecute.luau")))(player.UserId, false, self.gameId)
     end
     local oldSession = env.__AriseAutoSession
     if oldSession and oldSession.connection then oldSession.connection:Disconnect() end
@@ -460,12 +493,12 @@ local function startupPost(route, body, canContinue)
     local function allowed() return loaderPresent() and (not canContinue or canContinue()) end
     for attempt = 1, 3 do
         if not allowed() then break end
-        env.__StudyHubLoaderStatus = {stage = route, attempt = attempt}
+        env.__VykronHubLoaderStatus = {stage = route, attempt = attempt}
         status.Text = (stages[route] or "Conectando") .. " · tentativa " .. attempt .. "/3..."
         local code, reply, raw, started, retryAfter = post(route, body, allowed)
         lastCode, lastReply, lastRaw, lastStart = code, reply, raw, started
         if not allowed() then break end
-        env.__StudyHubLoaderStatus.status = code
+        env.__VykronHubLoaderStatus.status = code
         if Policy.classify(code, reply) == "retry" then gui.Enabled = true end
         if Policy.classify(code, reply) ~= "retry" or attempt == 3 then return code, reply, raw, started end
         local pause = code == 429 and math.max(60, retryAfter or 60) or attempt * 3
@@ -596,8 +629,8 @@ local function launch(key, automatic)
     local setupOK, setup = pcall(function()
         assert(type(requestHttp) == "function", "Executor sem suporte a requisicoes POST.")
         assert(type(readfile) == "function" and type(writefile) == "function", "Executor sem arquivos locais.")
-        if type(makefolder) == "function" then pcall(makefolder, "AriseStudyHub") end
-        writefile("AriseStudyHub/AutoExecute.luau", bootstrap)
+        if type(makefolder) == "function" then pcall(makefolder, "VykronHub") end
+        writefile("VykronHub/AutoExecute.luau", bootstrap)
         local oldAuto = env.__AriseAutoSession
         if oldAuto and oldAuto.connection then oldAuto.connection:Disconnect() end
         env.__AriseAutoSession = nil
@@ -606,7 +639,7 @@ local function launch(key, automatic)
     if not setupOK then busy = false show(tostring(setup)) return end
     local device = setup
     if not waitForGameReady() then busy = false show("O jogo ainda nao terminou de carregar. Tente validar novamente.") return end
-    local bindingEpoch = Policy.bindingEpoch(readJson("AriseStudyHub/license.json"), game.GameId, key)
+    local bindingEpoch = Policy.bindingEpoch(readJson("VykronHub/license.json"), game.GameId, key)
     local resolveCode, resolved = startupPost("/v1/jogo", {gameId = tostring(game.GameId)})
     if resolveCode ~= 200 or type(resolved) ~= "table" or resolved.protocolo ~= 2 or type(resolved.hub) ~= "table" then
         busy = false
@@ -617,7 +650,7 @@ local function launch(key, automatic)
     if not gui.Parent then busy = false return end
     local c = setmetatable({active = true, deadline = 0, renewAt = 0, device = device,
         gameId = tostring(game.GameId), hubId = resolved.hub.id}, Controller)
-    env.__StudyHubLicense = c
+    env.__VykronHubLicense = c
     c.key = key
     if code ~= 200 or type(reply) ~= "table" or reply.protocolo ~= 2 or type(reply.hub) ~= "table"
         or reply.hub.id ~= c.hubId or not c:accept(reply, startedAt) then
@@ -625,7 +658,7 @@ local function launch(key, automatic)
         busy = false return
     end
     local function bindOriginal()
-        local slot = c.hubId == "arise" and "__AriseStudyHub" or "__StudyHubRuntime"
+        local slot = c.hubId == "arise" and "__VykronHub" or "__VykronHubRuntime"
         local hub = env[slot]
         if hub and type(hub.destroy) == "function" and not c.boundHub then
             c.boundHub, c.hubSlot = hub, slot
@@ -683,7 +716,7 @@ local function launch(key, automatic)
         if alt ~= loadstring then add("getgenv+name", alt, true) add("getgenv", alt, false) end
         for index, form in ipairs(forms) do
             local ok, result, diagnostic
-            if form[3] then ok, result, diagnostic = pcall(form[2], text, "StudyHubLicensed")
+            if form[3] then ok, result, diagnostic = pcall(form[2], text, "VykronHubLicensed")
             else ok, result, diagnostic = pcall(form[2], text) end
             if ok and type(result) == "function" then return result, form[1], notes end
             notes[#notes + 1] = form[1] .. ": " .. tostring(ok and diagnostic or result):sub(1, 160)
@@ -709,9 +742,9 @@ local function launch(key, automatic)
         local result, how, notes = compileRuntime(source)
         if result then fn, compileForm, compileNotes, compileTries = result, how, notes, compileAttempt break end
         compileProblem = table.concat(notes, " | "):sub(1, 1200)
-        warn("[StudyHub] Runtime compile attempt " .. compileAttempt .. ": " .. compileProblem)
+        warn("[VykronHub] Runtime compile attempt " .. compileAttempt .. ": " .. compileProblem)
         pcall(function()
-            writefile("AriseStudyHub/loader-error.json", Http:JSONEncode({stage = "compile", attempt = compileAttempt,
+            writefile("VykronHub/loader-error.json", Http:JSONEncode({stage = "compile", attempt = compileAttempt,
                 placeId = game.PlaceId, gameId = game.GameId, utc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
                 executor = executorName(), bytes = #source, message = compileProblem}))
         end)
@@ -731,23 +764,23 @@ local function launch(key, automatic)
         end
     end
     if not fn then
-        c:stop("A hub recebida continua com erro de compilacao apos 3 tentativas. Detalhes: AriseStudyHub/loader-error.json.")
+        c:stop("A hub recebida continua com erro de compilacao apos 3 tentativas. Detalhes: VykronHub/loader-error.json.")
         busy = false return
     end
     -- A stale error file from an earlier failed attempt would look like a current failure: remove it,
     -- or keep a clearly labelled note when the hub only compiled through a fallback.
     pcall(function()
         if compileTries > 1 or compileForm ~= "loadstring+name" then
-            writefile("AriseStudyHub/loader-error.json", Http:JSONEncode({stage = "compile-recovered", form = compileForm,
+            writefile("VykronHub/loader-error.json", Http:JSONEncode({stage = "compile-recovered", form = compileForm,
                 attempt = compileTries, executor = executorName(), utc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
                 bytes = #source, message = table.concat(compileNotes, " | "):sub(1, 600),
                 earlier = compileProblem and compileProblem:sub(1, 600) or nil}))
-        elseif type(isfile) == "function" and type(delfile) == "function" and isfile("AriseStudyHub/loader-error.json") then
-            delfile("AriseStudyHub/loader-error.json")
+        elseif type(isfile) == "function" and type(delfile) == "function" and isfile("VykronHub/loader-error.json") then
+            delfile("VykronHub/loader-error.json")
         end
     end)
     local saved = pcall(function()
-        local cache = readJson("AriseStudyHub/license.json") or {}
+        local cache = readJson("VykronHub/license.json") or {}
         cache.byGame = type(cache.byGame) == "table" and cache.byGame or {}
         cache.byGame[tostring(game.GameId)] = key
         cache.lastKey = key
@@ -756,11 +789,11 @@ local function launch(key, automatic)
             cache.bindingsByGame[tostring(game.GameId)] = {key = key, epoch = c.bindingEpoch}
         end
         if c.hubId == "arise" then cache.key = key end
-        writefile("AriseStudyHub/license.json", Http:JSONEncode(cache))
+        writefile("VykronHub/license.json", Http:JSONEncode(cache))
     end)
     if not saved then c:stop("Nao foi possivel salvar a key para continuidade por teleporte.") busy = false return end
     -- Only needed by the hub's existing capability check. Never store the downloaded runtime locally.
-    writefile("AriseStudyHub/Hub.luau", '-- Runtime servido exclusivamente pelo loader.\nerror("Use StudyHub_Loader.luau")')
+    writefile("VykronHub/Hub.luau", '-- Runtime servido exclusivamente pelo loader.\nerror("Use VykronHub_Loader.luau")')
     c.launchThread = task.spawn(function()
         -- VYKRON-RUNTIME-DIAGNOSTIC-1: do not discard the startup error.
         local ok, runtimeProblem = xpcall(fn, function(value)
@@ -783,7 +816,7 @@ local function launch(key, automatic)
             diagnostic = diagnostic:gsub("%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x", "[KEY REDACTED]"):sub(1, 4000)
             warn("[Vykron] Runtime initialization failed: " .. diagnostic)
             pcall(function()
-                writefile("AriseStudyHub/loader-error.json", Http:JSONEncode({
+                writefile("VykronHub/loader-error.json", Http:JSONEncode({
                     stage = "runtime", version = "VYKRON-RUNTIME-DIAGNOSTIC-1",
                     placeId = game.PlaceId, gameId = game.GameId,
                     releaseId = c.moduleRelease, bytes = #source,
@@ -795,7 +828,7 @@ local function launch(key, automatic)
         if c:isValid() then bindOriginal() end
         if not ok then
             local firstLine = diagnostic:match("^[^\r\n]+") or "Unknown runtime error"
-            c:stop("Erro ao iniciar: " .. firstLine:sub(1, 180) .. " | Detalhes: AriseStudyHub/loader-error.json")
+            c:stop("Erro ao iniciar: " .. firstLine:sub(1, 180) .. " | Detalhes: VykronHub/loader-error.json")
         elseif c.ready and c:isValid() then gui.Enabled = false end
         if c.ready or not c.active then busy = false end
     end)
@@ -811,7 +844,7 @@ local function submit(automatic)
     local ok = pcall(launch, key, automatic == true)
     if not ok then
         busy = false
-        local c = env.__StudyHubLicense
+        local c = env.__VykronHubLicense
         if c then c:stop("Falha ao carregar. Confira os arquivos locais e o servidor.")
         else show("Falha ao carregar. Confira os arquivos locais e o servidor.") end
     end
@@ -819,11 +852,11 @@ end
 button.Activated:Connect(function() submit(false) end)
 input.FocusLost:Connect(function(enter) if enter then submit() end end)
 gui.Destroying:Connect(function()
-    local c = env.__StudyHubLicense
+    local c = env.__VykronHubLicense
     if c then c:stop(nil, true) end
 end)
-local cachedKey = Policy.savedKey(readJson("AriseStudyHub/license.json"), game.GameId)
-gui.Enabled = not Policy.silentStartup(readJson("AriseStudyHub/license.json"), game.GameId)
+local cachedKey = Policy.savedKey(readJson("VykronHub/license.json"), game.GameId)
+gui.Enabled = not Policy.silentStartup(readJson("VykronHub/license.json"), game.GameId)
 if cachedKey then
     input.Text = cachedKey
     status.Text = "Key salva encontrada. Validando automaticamente..."
@@ -832,8 +865,8 @@ elseif resume == true then
     status.Text = "Nao foi possivel ler uma key salva. Cole a key para continuar."
 end
 ]=====]
-writefile("AriseStudyHub/Loader.luau",source)
-writefile("AriseStudyHub/AutoExecute.luau",[====[
+writefile("VykronHub/Loader.luau",source)
+writefile("VykronHub/AutoExecute.luau",[====[
 local userId, resume, originGameId = ...
 if not game:IsLoaded() then game.Loaded:Wait() end
 local player = game:GetService("Players").LocalPlayer
@@ -842,8 +875,8 @@ if player.UserId ~= userId then return nil end
 originGameId = tostring(originGameId or game.GameId)
 local env = getgenv()
 local function enabled()
-    local path = originGameId == "7074860883" and ("AriseStudyHub/" .. userId .. ".json")
-        or ("AriseStudyHub/Profiles/" .. originGameId .. "_" .. userId .. ".json")
+    local path = originGameId == "7074860883" and ("VykronHub/" .. userId .. ".json")
+        or ("VykronHub/Profiles/" .. originGameId .. "_" .. userId .. ".json")
     local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(readfile(path)) end)
     if not ok or type(data) ~= "table" or data.userId ~= userId then return false end
     local h = data.houses
@@ -864,9 +897,9 @@ local session = {version = "multi-1", originGameId = originGameId, queued = fals
 env.__AriseAutoSession = session
 function session.arm()
     if session.queued or not enabled() then return end
-    local auth = env.__StudyHubLicense
+    local auth = env.__VykronHubLicense
     if auth and not auth:isValid() then return end
-    local source = string.format('assert(loadstring(readfile("AriseStudyHub/AutoExecute.luau")))(%s, true, %q)', tostring(userId), originGameId)
+    local source = string.format('assert(loadstring(readfile("VykronHub/AutoExecute.luau")))(%s, true, %q)', tostring(userId), originGameId)
     local ok, problem = pcall(queue, source)
     session.queued, session.problem = ok, not ok and tostring(problem) or nil
 end
@@ -878,14 +911,14 @@ session.connection = player.OnTeleport:Connect(function(status)
         session.arm()
     end
 end)
-if resume and env.__StudyHubResumeJob ~= game.JobId then
-    env.__StudyHubResumeJob = game.JobId
+if resume and env.__VykronHubResumeJob ~= game.JobId then
+    env.__VykronHubResumeJob = game.JobId
     local ok, problem = pcall(function()
-        assert(loadstring(readfile("AriseStudyHub/Loader.luau")))(true)
+        assert(loadstring(readfile("VykronHub/Loader.luau")))(true)
     end)
-    if not ok then warn("[StudyHub] Nao foi possivel abrir o loader: " .. tostring(problem)) end
+    if not ok then warn("[VykronHub] Nao foi possivel abrir o loader: " .. tostring(problem)) end
 end
 return session
 ]====])
-assert(readfile("AriseStudyHub/Loader.luau")==source,"Falha ao salvar loader")
+assert(readfile("VykronHub/Loader.luau")==source,"Falha ao salvar loader")
 assert(loadstring(source))(false)
