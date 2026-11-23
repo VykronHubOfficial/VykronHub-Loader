@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST27-20261123"
+state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST28-20261123"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -1248,6 +1248,39 @@ end
 do
 local api={}
 state.limitBreaker=api
+-- Same goal precedence and asset IDs as the native NewUI Quests/Common modules.
+function api.icon(definition)
+    local goals={};for goal in pairs(definition.Goals or {}) do goals[#goals+1]=goal end;table.sort(goals)
+    local first=goals[1] or ""
+    local rules={{"^PlayTime","137504361633657"},{"^Brutes","95254773789707"},{"^ShadowsArised","104278863001328"},{"^Dungeon","105767317646901"},{"Castle","106302265444532"},{"Floor","106302265444532"},{"Wave","106302265444532"},{"^LevelReached","126007391909587"},{"^Rank","77124394846585"},{"^Awaken","77124394846585"},{"^WB","98234924459437"},{"Defeated","87217064840638"}}
+    for _,rule in ipairs(rules) do if string.find(first,rule[1]) then return "rbxassetid://"..rule[2] end end
+    return "rbxassetid://124774896626261"
+end
+function api.objective(definition,language)
+    local labels={
+        PlayTime={"Permanecer online","Remain online","Permanecer conectado"},
+        EnemiesDefeated={"Derrotar inimigos","Defeat enemies","Derrotar enemigos"},
+        BrutesDefeated={"Derrotar brutos","Defeat brutes","Derrotar brutos"},
+        ShadowsArised={"Extrair sombras","Arise shadows","Extraer sombras"},
+        DungeonClear={"Concluir dungeons","Complete dungeons","Completar dungeons"},
+        FloorCompleted={"Pisos do Castelo Infernal","Infernal Castle floors","Pisos del Castillo Infernal"},
+        HeavenFloorCompleted={"Pisos do Castelo Celestial","Heavenly Castle floors","Pisos del Castillo Celestial"},
+        CompletedWave={"Ondas do Deserto Infinito","Infinite Desert waves","Oleadas del Desierto Infinito"},
+        EclipseCourtClear={"Eclipse Court","Eclipse Court","Eclipse Court"},
+        KeyRaidClear={"Dungeons de chave","Key dungeons","Dungeons de llave"},
+        TimeTrialRoom={"Salas da Trial","Trial rooms","Salas de Trial"}}
+    local goals={};for goal in pairs(definition.Goals or {}) do goals[#goals+1]=goal end;table.sort(goals)
+    for _,goal in ipairs(goals) do
+        local label=labels[goal]
+        if label then return label[language=="PT" and 1 or language=="ES" and 3 or 2] end
+        local action=state.recurringQuestPolicy and state.recurringQuestPolicy.action(goal)
+        if action and action.kind=="event" then
+            local raids={winter="Winter Raid",dedu="Dedu Raid",jungle="Jungle Raid",giants="Giants Raid",boss="World Boss"}
+            if raids[action.activity] then return raids[action.activity] end
+        end
+    end
+    return definition.Desc or (language=="PT" and "Objetivo da missão" or language=="ES" and "Objetivo de la misión" or "Quest objective")
+end
 function api.enabled(q) return q.splitQuests==true and q.limitBreakerEnabled==true end
 function api.selected(q,bucket,id)
     local settings=q.missionSelection
@@ -10873,7 +10906,7 @@ function state.limitBreaker.catalog(bucket)
                 local action=state.recurringQuestPolicy.action(goal)
                 if action then stage=math.min(stage,state.recurringQuestPolicy.stage(action)) end
             end
-            rows[#rows+1]={id=id,name=definition.Name or id,stage=stage}
+            rows[#rows+1]={id=id,name=definition.Name or id,stage=stage,image=state.limitBreaker.icon(definition)}
         end
     end
     table.sort(rows,function(a,b)
@@ -15026,13 +15059,15 @@ state.hubParts.questProfiles=function(H)
         local catalog=lb.catalog(bucket);local records=clientData.Get("Quests",bucket)
         for index,entry in ipairs(catalog) do
             local f=frame(entry.id,list,6+(index-1)*78,72);rows[index]=f
-            local name=make("TextLabel",{Name="Name",Size=UDim2.new(1,-150,0,26),Position=UDim2.fromOffset(46,5),Text=entry.name,TextColor3=colors.text,BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},f)
+            make("ImageLabel",{Name="MissionIcon",Size=UDim2.fromOffset(32,32),Position=UDim2.fromOffset(42,14),BackgroundTransparency=1,Image=entry.image,ScaleType=Enum.ScaleType.Fit},f)
+            local name=make("TextLabel",{Name="Name",Size=UDim2.new(1,-190,0,26),Position=UDim2.fromOffset(82,5),Text=entry.name,TextColor3=colors.text,BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},f)
             local record
             for id,value in pairs(type(records)=="table" and records or {}) do if type(value)=="table" and (value.Name or id)==entry.id then record=value;break end end
             local progress={}
             for _,v in pairs(record and record.Progress or {}) do progress[#progress+1]=tostring(v.Current or 0).."/"..tostring(v.Max or "?") end
             local note=record and (record.Completed and tr("Concluída","Completed","Completada") or table.concat(progress," · ")) or tr("Não está no quadro atual","Not in current board","No está en el cuadro actual")
-            make("TextLabel",{Name="Progress",Size=UDim2.new(1,-64,0,24),Position=UDim2.fromOffset(46,39),Text=note,TextColor3=record and colors.accent or colors.muted,BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},f)
+            make("TextLabel",{Name="Objective",Size=UDim2.new(1,-100,0,16),Position=UDim2.fromOffset(82,29),Text=lb.objective(definitions[entry.id] or {},uiState.language),TextColor3=colors.muted,BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},f)
+            make("TextLabel",{Name="Progress",Size=UDim2.new(1,-100,0,20),Position=UDim2.fromOffset(82,47),Text=note,TextColor3=record and colors.accent or colors.muted,BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},f)
             local toggle=row.Toggle:Clone();toggle.Name="Enabled";toggle.Position=UDim2.new(1,-48,0,8);toggle.Parent=f;H.paint(toggle,lb.selected(autoQuest,bucket,entry.id))
             connectUI(toggle,function()
                 lb.change(function(q)
@@ -15047,7 +15082,10 @@ state.hubParts.questProfiles=function(H)
             local up,down=small("Up","↑",-116),small("Down","↓",-84)
             connectUI(up,function() lb.move(bucket,entry.id,index-1);render() end,nil,rowConnections)
             connectUI(down,function() lb.move(bucket,entry.id,index+1);render() end,nil,rowConnections)
-            local handle=make("TextButton",{Name="Drag",Size=UDim2.fromOffset(36,60),Position=UDim2.fromOffset(4,5),Text="☰",TextColor3=colors.accent,BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=20},f)
+            local handle=make("TextButton",{Name="Drag",Size=UDim2.fromOffset(36,60),Position=UDim2.fromOffset(4,5),Text="",TextColor3=colors.accent,BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=20},f)
+            for bar=1,3 do
+                make("Frame",{Name="Bar"..bar,Size=UDim2.fromOffset(16,2),Position=UDim2.fromOffset(10,21+(bar-1)*6),BackgroundColor3=colors.accent,BorderSizePixel=0,Active=false},handle)
+            end
             addConnection(handle.InputBegan,function(input)
                 if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
                 local anchor=f.AbsolutePosition.Y
