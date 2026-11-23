@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST28-20261123"
+state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST29-20261123"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -1370,6 +1370,17 @@ function api.restore(q,saved)
         if any then q.questGroups=result end
     end
     if type(saved.refillTickets)=="boolean" then q.refillTickets=saved.refillTickets end
+    if type(saved.refillConfig)=="table" then
+        q.refillConfig={}
+        for _,key in ipairs({"difficulty","farmTeam","returnTeam"}) do local v=saved.refillConfig[key];if type(v)=="string" and #v>0 and #v<=150 then q.refillConfig[key]=v end end
+    end
+    local teamPending=saved.refillTeamPending
+    if type(teamPending)=="table" and type(teamPending.id)=="string" and #teamPending.id<=150 and (teamPending.phase=="farm" or teamPending.phase=="return") then
+        local at,attempts=tonumber(teamPending.at),tonumber(teamPending.attempts)
+        if not at or at~=at or at<0 or at==math.huge then at=0 end
+        if not attempts or attempts~=attempts or attempts<0 or attempts==math.huge then attempts=0 end
+        q.refillTeamPending={id=teamPending.id,phase=teamPending.phase,at=at,attempts=math.clamp(attempts,0,3)}
+    end
 end
 function api.syncScope(q)
     if q.splitQuests then q.enabled=q.progressionEnabled or q.limitBreakerEnabled;q.profile=q.limitBreakerEnabled and "limitbreaker" or "progression" end
@@ -6490,6 +6501,7 @@ task.spawn(function()
     while alive do
         task.wait(0.1)
         if not alive then break end
+        if state.refillTeams and state.refillTeams.owns() then state.resetTeamSwitch();continue end
         local u=dungeon.utilities;local root=rootPart()
         local human=root and root.Parent:FindFirstChildOfClass("Humanoid")
         local ready=not state.panic and not state.stopped and not state.autoLeaving and not state.raidPaused
@@ -10527,6 +10539,7 @@ local function requestFor(job)
 end
 local function clearJob()
     local job=autoQuest.journey
+    if job and job.bucket=="TicketFarm" and state.refillTeams and not state.refillTeams.finish(job) then message(state.refillTeams.status);return false end
     if job and job.bucket and job.partyRequested and not insideDungeon() then
         local mode=dungeonMode({mode=job.mode})
         local room=partyClient.GetRoom(mode.event)
@@ -10687,7 +10700,8 @@ function state.recurringQuestStep()
             message("Auto Quest: retornando para repor Tickets na Trial.");return true
         end
         autoQuest.ticketResume=job
-        autoQuest.journey={bucket="TicketFarm",id="tickets",definitionId="TicketFarm",goal="TicketFull",mode="trial",name="Tickets",key="",difficulty="Easy",phase="entry",beforeProgress=stock}
+        local refillConfig=autoQuest.refillConfig or {}
+        autoQuest.journey={bucket="TicketFarm",id="tickets",definitionId="TicketFarm",goal="TicketFull",mode="trial",name="Tickets",key="",difficulty=refillConfig.difficulty or "Easy",farmTeam=refillConfig.farmTeam,returnTeam=refillConfig.returnTeam,phase="entry",beforeProgress=stock}
         if not persist() then autoQuest.journey=job;autoQuest.ticketResume=nil;message("Auto Quest: falha ao salvar a reposição de Tickets.");return true end
         job=autoQuest.journey;api.enterAt=nil;api.exitAt=nil
     end
@@ -10735,6 +10749,7 @@ function state.recurringQuestStep()
         api.enterAt=api.enterAt or os.clock()
         if (record.Name or job.id)~=job.definitionId then clearJob();return true end
         if not autoExecute then message("Auto Quest: ative Auto Execute para entrar no modo exigido.");return true end
+        if job.bucket=="TicketFarm" and state.refillTeams and not state.refillTeams.prepare(job) then message(state.refillTeams.status);return true end
         if state.syncQuestAFK then
             local ok,ready=pcall(state.syncQuestAFK,job.mode)
             if not ok or not ready then message("Auto Quest: aguardando suspender entradas AFK concorrentes.");return true end
@@ -10813,6 +10828,112 @@ function state.recurringQuestStep()
     return firstStage~=nil or autoQuest.scope=="recurring"
 end
 end
+-- Native Teams equip receipt; no key simulation and no changes to manual Dungeon preferences.
+do
+local api={status=""};state.refillTeams=api
+local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.language=="ES" and es or en end
+function api.catalog()
+    local teams=clientData.Get("Teams")
+    local rows={}
+    if type(teams)~="table" then return rows end
+    for id,team in pairs(teams) do
+        if type(id)=="string" and type(team)=="table" then
+            local key=team.Key and tostring(team.Key) or ""
+            key=state.teamSwitchKeys and state.teamSwitchKeys[key] or key
+            rows[#rows+1]={id=id,name=(key~="" and key.." · " or "")..tostring(team.Name or id)}
+        end
+    end
+    table.sort(rows,function(a,b) return a.name<b.name end);return rows
+end
+function api.owns()
+    return autoQuest.refillTeamPending~=nil or autoQuest.journey and autoQuest.journey.bucket=="TicketFarm"
+end
+function api.equip(id,phase)
+    if not id or id=="" then
+        local previous=autoQuest.refillTeamPending
+        if previous then return api.equip(previous.id,previous.phase) end
+        api.status="";return true
+    end
+    local teams=clientData.Get("Teams")
+    if type(teams)~="table" or type(teams[id])~="table" then api.status=tr("Reposição: time selecionado não existe mais. Escolha outro.","Refill: selected team no longer exists. Choose another.","Reposición: el equipo elegido ya no existe. Elige otro.");return false end
+    local pending=autoQuest.refillTeamPending
+    if pending and (pending.id~=id or pending.phase~=phase) then
+        api.status=tr("Reposição: aguardando a troca de time anterior.","Refill: waiting for the previous team switch.","Reposición: esperando el cambio de equipo anterior.");return false
+    end
+    if tostring(player:GetAttribute("TeamWorn"))==id then
+        if pending then
+            autoQuest.refillTeamPending=nil
+            if not save() then autoQuest.refillTeamPending=pending;api.status=tr("Falha ao salvar a confirmação do time.","Could not save team confirmation.","Error al guardar la confirmación del equipo.");return false end
+        end
+        api.status="";return true
+    end
+    local now=workspace:GetServerTimeNow()
+    if state.panic or state.stopped or player.GameplayPaused or state.rebirthing or Input:GetFocusedTextBox() then return false end
+    if pending and now-(pending.at or now)<8 then
+        api.status=tr("Reposição: aguardando confirmar time ","Refill: waiting to confirm team ","Reposición: esperando confirmar equipo ")..tostring(teams[id].Name or id);return false
+    end
+    if pending and (pending.attempts or 0)>=3 then
+        api.status=tr("Reposição: time não confirmado após 3 tentativas; revise a seleção.","Refill: team unconfirmed after 3 attempts; review selection.","Reposición: equipo sin confirmar tras 3 intentos; revisa la selección.");return false
+    end
+    local receipt={id=id,phase=phase,at=now,attempts=(pending and pending.attempts or 0)+1}
+    autoQuest.refillTeamPending=receipt
+    if not save() then autoQuest.refillTeamPending=pending;api.status=tr("Falha ao salvar troca de time; nenhum pedido enviado.","Could not save team switch; no request sent.","Error al guardar el cambio de equipo; no se envió solicitud.");return false end
+    general:Fire({Event="Teams",Action="Equip",TeamId=id})
+    api.status=tr("Reposição: solicitando time ","Refill: requesting team ","Reposición: solicitando equipo ")..tostring(teams[id].Name or id)
+    return false
+end
+function api.prepare(job)
+    local valid=false
+    for _,option in ipairs(trialDifficulties) do if option.id==job.difficulty then valid=true end end
+    if not valid then api.status=tr("Reposição: dificuldade da Trial indisponível. Escolha outra.","Refill: Trial difficulty unavailable. Choose another.","Reposición: dificultad de Trial no disponible. Elige otra.");return false end
+    if job.returnTeam then
+        local teams=clientData.Get("Teams")
+        if type(teams)~="table" or type(teams[job.returnTeam])~="table" then api.status=tr("Reposição: selecione um time de retorno válido antes de entrar.","Refill: select a valid return team before entering.","Reposición: elige un equipo de retorno válido antes de entrar.");return false end
+    end
+    return api.equip(job.farmTeam,"farm")
+end
+function api.finish(job)
+    if insideDungeon() then return false end
+    local pending=autoQuest.refillTeamPending
+    -- A cancelled entry still reconciles the last native equip request first.
+    if pending and pending.phase=="farm" then
+        if not api.equip(pending.id,"farm") then return false end
+    end
+    return api.equip(job.returnTeam,"return")
+end
+function api.change(key,value)
+    if key~="difficulty" and key~="farmTeam" and key~="returnTeam" then return false end
+    local old,oldPending,oldJob=autoQuest.refillConfig,autoQuest.refillTeamPending,autoQuest.journey
+    local config=table.clone(old or {});config[key]=value~="" and value or nil
+    autoQuest.refillConfig=config
+    local job=autoQuest.journey
+    if job and job.bucket=="TicketFarm" and not insideDungeon() then
+        local pending=autoQuest.refillTeamPending
+        local teams=clientData.Get("Teams")
+        local missing=pending and type(teams)=="table" and not teams[pending.id]
+        if pending and key~="difficulty" and ((pending.attempts or 0)>=3 or missing) then autoQuest.refillTeamPending=nil;pending=nil end
+        if not pending then
+            job=table.clone(job);job.difficulty=config.difficulty or "Easy";job.farmTeam=config.farmTeam;job.returnTeam=config.returnTeam;autoQuest.journey=job
+        end
+    end
+    if not save() then autoQuest.refillConfig=old;autoQuest.refillTeamPending=oldPending;autoQuest.journey=oldJob;api.status=tr("Falha ao salvar opções da Trial.","Could not save Trial options.","Error al guardar las opciones de Trial.");return false end
+    return true
+end
+task.spawn(function()
+    while alive do
+        task.wait(1)
+        if not alive then break end
+        local job=autoQuest.journey
+        if job and job.bucket=="TicketFarm" and not insideDungeon() and (not autoQuest.enabled or autoQuest.refillTickets==false or autoQuest.splitQuests and not autoQuest.limitBreakerEnabled) then
+            local ok,done=pcall(api.finish,job)
+            if ok and done then
+                local previous,previousResume=autoQuest.journey,autoQuest.ticketResume;autoQuest.journey=nil;autoQuest.ticketResume=nil
+                if not save() then autoQuest.journey=previous;autoQuest.ticketResume=previousResume end
+            elseif not ok then api.status=tostring(done) end
+        end
+    end
+end)
+end
 -- Live profile changes use the existing quest entry/exit and saved preferences.
 do
 local api=state.questProfiles
@@ -10862,6 +10983,7 @@ function api.transition()
     local room=partyClient.GetRoom(mode.event)
     if room and room.Leader==player.UserId and not room.Locked then general:Fire({Event=mode.event,Action="Leave"}) end
     if not job.bucket and api.resetWorldRun then api.resetWorldRun();return true end
+    if job.bucket=="TicketFarm" and state.refillTeams and not state.refillTeams.finish(job) then questStatus.Text=state.refillTeams.status;return true end
     local previousResume=autoQuest.ticketResume
     autoQuest.journey=nil;autoQuest.ticketResume=nil;state.autoLeaving=nil;api.exitAt=nil
     if not save() then autoQuest.journey=job;autoQuest.ticketResume=previousResume;api.problem="Falha ao salvar a troca de tarefa." end
@@ -15020,9 +15142,24 @@ state.hubParts.questProfiles=function(H)
         for _,key in ipairs({"Action","MirrorText","QuestScopeLabel"}) do b:SetAttribute(key,nil) end
         b.Position=UDim2.fromOffset(12,y);b.Size=UDim2.new(1,-24,0,32);b.Parent=parent;b.Title.Text=text or "";return b
     end
-    local resetCard=frame("ResetSettings",page,8,218)
+    local resetCard=frame("ResetSettings",page,8,350)
     for name,y in pairs({Row_AutoResetQuests=8,Act_QuestResetScope=66,Row_QuestResetInterval=104}) do local c=panel[name];c.Parent=resetCard;c.Position=UDim2.fromOffset(name=="Act_QuestResetScope" and 44 or 8,y) end
     local refill=resetCard.Row_AutoResetQuests:Clone();refill.Name="Row_TicketRefill";refill.Position=UDim2.fromOffset(8,154);refill.Parent=resetCard
+    local difficulty=button("RefillDifficulty",resetCard,212)
+    local farmTeam=button("RefillFarmTeam",resetCard,254)
+    local returnTeam=button("RefillReturnTeam",resetCard,296)
+    connectUI(difficulty,function()
+        local options={}
+        for _,entry in ipairs(trialDifficulties) do options[#options+1]={id=entry.id,name=entry.name,selected=(autoQuest.refillConfig and autoQuest.refillConfig.difficulty or "Easy")==entry.id} end
+        choose(tr("Dificuldade da Trial","Trial difficulty","Dificultad de Trial"),options,function(id) state.refillTeams.change("difficulty",id);if api.refresh then api.refresh() end end)
+    end)
+    local function chooseTeam(key)
+        local options={{id="",name=tr("Não trocar time","Do not switch team","No cambiar equipo"),selected=not (autoQuest.refillConfig and autoQuest.refillConfig[key])}}
+        for _,entry in ipairs(state.refillTeams.catalog()) do options[#options+1]={id=entry.id,name=entry.name,selected=autoQuest.refillConfig and autoQuest.refillConfig[key]==entry.id} end
+        choose(key=="farmTeam" and tr("Time para a Trial","Trial farming team","Equipo para Trial") or tr("Time ao terminar","Team after farming","Equipo al terminar"),options,function(id) state.refillTeams.change(key,id);if api.refresh then api.refresh() end end)
+    end
+    connectUI(farmTeam,function() chooseTeam("farmTeam") end)
+    connectUI(returnTeam,function() chooseTeam("returnTeam") end)
     local bottom=template.Position.Y.Offset+template.Size.Y.Offset
     for _,child in ipairs(panel:GetChildren()) do if child:IsA("GuiObject") and child~=template and child.Position.Y.Offset>=bottom+142 then child.Position-=UDim2.fromOffset(0,56) end end
     panel.Size-=UDim2.fromOffset(0,56)
@@ -15030,11 +15167,11 @@ state.hubParts.questProfiles=function(H)
     row.Toggle:SetAttribute("Bind",nil);row.Toggle:SetAttribute("Id",nil)
     local open=button("Act_LimitBreaker",panel,bottom+48)
     open.Position=UDim2.fromOffset(44,bottom+48);open.Size=UDim2.new(1,-60,0,30)
-    local missionCard=frame("MissionSettings",page,238,146)
+    local missionCard=frame("MissionSettings",page,370,146)
     local daily=button("Daily",missionCard,8);local weekly=button("Weekly",missionCard,50);local strategy=button("Strategy",missionCard,92)
-    local activity=frame("QuestStatus",page,396,122)
+    local activity=frame("QuestStatus",page,528,148)
     local status=make("TextLabel",{Name="Status",Size=UDim2.new(1,-24,1,-16),Position=UDim2.fromOffset(12,8),BackgroundTransparency=1,Text="",TextColor3=colors.text,Font=Enum.Font.GothamMedium,TextSize=12,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top},activity)
-    page.CanvasSize=UDim2.fromOffset(0,532)
+    page.CanvasSize=UDim2.fromOffset(0,690)
     local listPage=page:Clone();listPage.Name="LimitBreakerMissions"
     for _,child in ipairs(listPage:GetChildren()) do child:Destroy() end
     listPage.Visible=false;listPage.Parent=hub.pages
@@ -15141,7 +15278,13 @@ state.hubParts.questProfiles=function(H)
         refill.Title.Text=tr("Auto Trial · repor Tickets","Auto Trial · refill Tickets","Auto Trial · reponer Tickets")
         refill.Caption.Text=tr("Sem saldo para resets: Trial até encher.","Cannot afford resets: Trial until full.","Sin saldo para reinicios: Trial hasta llenar.")
         H.paint(refill.Toggle,autoQuest.refillTickets~=false)
-        status.Text="Limit Breaker: "..(autoQuest.limitBreakerEnabled and "ON" or "OFF").."\n"..(api.problem or questStatus.Text or "").."\n"..state.questReset.status
+        local config=autoQuest.refillConfig or {}
+        local teams=clientData.Get("Teams")
+        local function teamName(id) return id and type(teams)=="table" and type(teams[id])=="table" and tostring(teams[id].Name or id) or id or tr("Não trocar","Do not switch","No cambiar") end
+        difficulty.Title.Text=tr("Dificuldade: ","Difficulty: ","Dificultad: ")..(config.difficulty or "Easy").." >"
+        farmTeam.Title.Text=tr("Time de farm: ","Farming team: ","Equipo de farm: ")..teamName(config.farmTeam).." >"
+        returnTeam.Title.Text=tr("Time de retorno: ","Return team: ","Equipo de retorno: ")..teamName(config.returnTeam).." >"
+        status.Text="Limit Breaker: "..(autoQuest.limitBreakerEnabled and "ON" or "OFF").."\n"..(api.problem or questStatus.Text or "").."\n"..state.questReset.status.."\n"..state.refillTeams.status
     end
     api.refresh=update;table.insert(H.periodic,update);update()
 end

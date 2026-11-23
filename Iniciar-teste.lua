@@ -1,18 +1,18 @@
--- Local Craft TEST28; waits for the normal licensed loader after each teleport.
+-- Local Craft TEST29; waits for the normal licensed loader after each teleport.
 local E=getgenv()
 local P=game:GetService("Players").LocalPlayer
 local Http=game:GetService("HttpService")
-local build="VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST28-20261123"
-local marker="VykronHub/Tests/QuestTest-TEST28-"..P.UserId..".json"
+local build="VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST29-20261123"
+local marker="VykronHub/Tests/QuestTest-TEST29-"..P.UserId..".json"
 local valid,licensed=pcall(function() return E.__VykronHubLicense:isValid() end)
 assert(valid and licensed,"Execute primeiro o loader normal com sua key valida.")
 if type(E.VykronCraftTestStop)=="function" then E.VykronCraftTestStop() end
 local h=E.__VykronHub
 if not h or h.state.build~=build then
-    assert(loadstring(readfile("VykronHub/Tests/Arise-2.0-test28.lua")))()
+    assert(loadstring(readfile("VykronHub/Tests/Arise-2.0-test29.lua")))()
     h=assert(E.__VykronHub)
 end
-assert(h.state.build==build,"TEST28 nao carregada.")
+assert(h.state.build==build,"TEST29 nao carregada.")
 local stopped=false
 local function checkpoint()
     if stopped then return end
@@ -41,9 +41,9 @@ task.spawn(function()
         if not ready then task.wait(0.5) end
     until ready or os.clock()>=deadline
     if not ready then return end
-    local ok,m=pcall(function() return Http:JSONDecode(readfile("VykronHub/Tests/QuestTest-TEST28-"..P.UserId..".json")) end)
+    local ok,m=pcall(function() return Http:JSONDecode(readfile("VykronHub/Tests/QuestTest-TEST29-"..P.UserId..".json")) end)
     if not ok or type(m)~="table" or m.userId~=P.UserId or m.armed~=true or type(m.expires)~="number" or m.expires<os.time() then return end
-    -- Production TEST20 does not recognize the TEST28 quest-reset fields. Preserve only
+    -- Production TEST20 does not recognize the TEST29 quest-reset fields. Preserve only
     -- these fields across its normal bootstrap; retain all other live preferences.
     local path="VykronHub/"..P.UserId..".json"
     local profile=Http:JSONDecode(readfile(path))
@@ -53,7 +53,7 @@ task.spawn(function()
     if type(m.questSettings)=="table" then profile.autoQuest=m.questSettings end
     if type(profile.autoQuest)=="table" then profile.autoQuest.resetQuests=m.resetQuests==true;profile.autoQuest.resetPending=m.resetPending;profile.autoQuest.resetInterval=m.resetInterval;profile.autoQuest.resetDue=m.resetDue;profile.autoQuest.nativeAFK=m.nativeAFK end
     writefile(path,Http:JSONEncode(profile))
-    assert(loadstring(readfile("VykronHub/Tests/Iniciar-teste-2.0-test28.lua")))()
+    assert(loadstring(readfile("VykronHub/Tests/Iniciar-teste-2.0-test29.lua")))()
 end)
 ]====]
 local queue=queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
@@ -61,4 +61,4 @@ if E.__VykronCraftTestQueued~=build and type(queue)=="function" then
     local ok=pcall(queue,continuation)
     if ok then E.__VykronCraftTestQueued=build end
 end
-print("[VykronHub] TEST28: Auto Reset Quests em Farm; Mode Automation em Dungeon > Utilities. Para continuar apos teleportes, mantenha Auto Execute ligado em Misc.")
+print("[VykronHub] TEST29: Auto Reset Quests em Farm; Mode Automation em Dungeon > Utilities. Para continuar apos teleportes, mantenha Auto Execute ligado em Misc.")
