@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST23-20261123"
+state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST24-20261123"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -1839,6 +1839,7 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
             end
         end
         if saved.autoQuest.resetQuests==true then autoQuest.resetQuests=true end
+        if saved.autoQuest.resetScope=="daily" or saved.autoQuest.resetScope=="weekly" or saved.autoQuest.resetScope=="both" then autoQuest.resetScope=saved.autoQuest.resetScope end
         local interval=tonumber(saved.autoQuest.resetInterval)
         if interval and interval==interval and interval>=0 and interval<=86400 then autoQuest.resetInterval=math.floor(interval) end
         local due=saved.autoQuest.resetDue
@@ -12491,6 +12492,18 @@ do
 local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.language=="ES" and es or en end
 local api={status=tr("Auto Reset Quests desligado.","Auto Reset Quests is off.","Auto Reset Quests desactivado."),emptyAt={},claimAt={},nextAt=0,interval=autoQuest.resetInterval or 0}
 state.questReset=api
+function api.includes(bucket)
+    local scope=autoQuest.resetScope or "both"
+    return scope=="daily" and bucket=="Daily" or scope=="weekly" and bucket=="Weekly" or scope~="daily" and scope~="weekly"
+end
+function api.setScope(scope)
+    if scope~="daily" and scope~="weekly" and scope~="both" then return false end
+    local previous,previousDue=autoQuest.resetScope,autoQuest.resetDue
+    autoQuest.resetScope=scope;autoQuest.resetDue=nil
+    if not save() then autoQuest.resetScope=previous;autoQuest.resetDue=previousDue;api.status=tr("Auto Reset: falha ao salvar o grupo escolhido.","Auto Reset: could not save selected group.","Auto Reset: error al guardar el grupo elegido.");return false end
+    api.emptyAt={};api.shortage=false
+    return true
+end
 function api.board(records,definitions)
     if type(records)~="table" then return "loading",0 end
     local count,ready=0,0
@@ -12565,6 +12578,7 @@ function api.step(now)
         if not save() then api.status=tr("Auto Reset: falha ao salvar; nenhum pedido novo enviado.","Auto Reset: could not save; no new request sent.","Auto Reset: error al guardar; ninguna solicitud nueva enviada.");return end
     end
     for _,bucket in ipairs({"Daily","Weekly"}) do
+        if not api.includes(bucket) then api.emptyAt[bucket]=nil;continue end
         local status=api.board(clientData.Get("Quests",bucket),definitions[bucket])
         if status=="claim" then
             api.emptyAt[bucket]=nil
@@ -12593,7 +12607,9 @@ function api.step(now)
         end
     end
     if interval>0 and not blockedMessage then
-        api.status=tr("Auto Reset: próximo reset em ","Auto Reset: next reset in ","Auto Reset: próximo reinicio en ")..math.max(0,math.ceil(math.min(autoQuest.resetDue.Daily or now+interval,autoQuest.resetDue.Weekly or now+interval)-now)).."s."
+        local nextDue=math.huge
+        for _,bucket in ipairs({"Daily","Weekly"}) do if api.includes(bucket) then nextDue=math.min(nextDue,autoQuest.resetDue[bucket] or now+interval) end end
+        api.status=tr("Auto Reset: próximo reset em ","Auto Reset: next reset in ","Auto Reset: próximo reinicio en ")..math.max(0,math.ceil(nextDue-now)).."s."
     end
     if blockedMessage then api.status=blockedMessage end
 end
@@ -14551,7 +14567,7 @@ state.hubParts.farm = function(H)
             local panel=farm.Progress
             local bottom=questButton.Position.Y.Offset+questButton.Size.Y.Offset
             for _,child in ipairs(panel:GetChildren()) do
-                if child:IsA("GuiObject") and child.Position.Y.Offset>=bottom then child.Position+=UDim2.fromOffset(0,104) end
+                if child:IsA("GuiObject") and child.Position.Y.Offset>=bottom then child.Position+=UDim2.fromOffset(0,142) end
             end
             local reset=panel.Row_AutoQuest:Clone();reset.Name="Row_AutoResetQuests"
             reset.Position=UDim2.fromOffset(8,bottom+5);reset.Size=UDim2.new(1,-16,0,52)
@@ -14559,8 +14575,24 @@ state.hubParts.farm = function(H)
             reset.Title.Size=UDim2.new(1,-84,0,20);reset.Caption.Size=UDim2.new(1,-76,0,32);reset.Caption.TextWrapped=true
             reset.Icon.Visible=false
             make("ImageLabel",{Name="ResetQuestIcon",Size=UDim2.fromOffset(28,28),Position=UDim2.fromOffset(6,5),BackgroundTransparency=1,Image="rbxassetid://137977196245643",ScaleType=Enum.ScaleType.Fit},reset)
-            reset.Parent=panel;panel.Size+=UDim2.fromOffset(0,104)
-            local intervalRow=make("Frame",{Name="Row_QuestResetInterval",Size=UDim2.new(1,-16,0,38),Position=UDim2.fromOffset(8,bottom+60),BackgroundTransparency=1},panel)
+            reset.Parent=panel;panel.Size+=UDim2.fromOffset(0,142)
+            local scopeButton=questButton:Clone();scopeButton.Name="Act_QuestResetScope"
+            for _,key in ipairs({"Action","MirrorText","QuestScopeLabel"}) do scopeButton:SetAttribute(key,nil) end
+            scopeButton.Position=UDim2.fromOffset(44,bottom+60);scopeButton.Size=UDim2.new(1,-60,0,32);scopeButton.Parent=panel
+            local function scopeName(id)
+                if id=="daily" then return uiState.language=="PT" and "Somente diárias" or uiState.language=="ES" and "Solo diarias" or "Daily only" end
+                if id=="weekly" then return uiState.language=="PT" and "Somente semanais" or uiState.language=="ES" and "Solo semanales" or "Weekly only" end
+                return uiState.language=="PT" and "Ambos" or uiState.language=="ES" and "Ambos" or "Both"
+            end
+            local function updateScope()
+                scopeButton.Title.Text=(uiState.language=="PT" and "Resetar: " or uiState.language=="ES" and "Reiniciar: " or "Reset: ")..scopeName(autoQuest.resetScope or "both").." >"
+            end
+            connectUI(scopeButton,function()
+                local options={}
+                for _,id in ipairs({"daily","weekly","both"}) do options[#options+1]={id=id,name=scopeName(id),selected=(autoQuest.resetScope or "both")==id} end
+                choose("Auto Reset Quests",options,function(id) state.questReset.setScope(id);updateScope() end)
+            end)
+            local intervalRow=make("Frame",{Name="Row_QuestResetInterval",Size=UDim2.new(1,-16,0,38),Position=UDim2.fromOffset(8,bottom+98),BackgroundTransparency=1},panel)
             local intervalLabel=make("TextLabel",{Name="Title",Size=UDim2.new(1,-120,1,0),Position=UDim2.fromOffset(44,0),Text="",BackgroundTransparency=1,TextColor3=colors.muted,Font=Enum.Font.Gotham,TextSize=10,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left},intervalRow)
             local intervalField=make("TextBox",{Name="Seconds",Size=UDim2.fromOffset(72,28),Position=UDim2.new(1,-82,0,4),Text=tostring(autoQuest.resetInterval or 0),ClearTextOnFocus=false,BackgroundColor3=colors.bg,TextColor3=colors.accent,Font=Enum.Font.GothamBold,TextSize=12},intervalRow)
             connectUI(intervalField,function()
@@ -14576,6 +14608,7 @@ state.hubParts.farm = function(H)
                 if not ok then state.questReset.status="Auto Reset: "..tostring(problem) end
                 state.setLocalizedText(reset.Title,"Auto Reset Quests")
                 reset.Caption.Text=state.questReset.status
+                updateScope()
                 intervalLabel.Text=uiState.language=="PT" and "Intervalo (s) · 0 = concluir todas" or uiState.language=="ES" and "Intervalo (s) · 0 = completar todas" or "Interval (s) · 0 = complete all"
                 H.paint(reset.Toggle,autoQuest.resetQuests==true)
             end

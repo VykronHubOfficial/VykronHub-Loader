@@ -1,4 +1,4 @@
--- Licensed TEST23 bootstrap; preserves the normal key flow and installs local test continuity.
+-- Licensed TEST24 bootstrap; preserves the normal key flow and installs local test continuity.
 local env=getgenv()
 local function licensed()
     local ok,result=pcall(function() return env.__VykronHubLicense and env.__VykronHubLicense:isValid() end)
@@ -13,11 +13,11 @@ assert(licensed(),"Ative sua key no loader normal para abrir o teste.")
 assert(type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function","O executor precisa suportar arquivos para continuar o teste apos teleportes.")
 for _,path in ipairs({"VykronHub","VykronHub/Tests"}) do pcall(makefolder,path) end
 local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/test-quests/"
-local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test23")
-assert(runtime:find("VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST23-20261123",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
-local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test23")
-assert(starter:find("TEST23",1,true),"Starter de teste ainda nao atualizado.")
-writefile("VykronHub/Tests/Arise-2.0-test23.lua",runtime)
-writefile("VykronHub/Tests/Iniciar-teste-2.0-test23.lua",starter)
+local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test24")
+assert(runtime:find("VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST24-20261123",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
+local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test24")
+assert(starter:find("TEST24",1,true),"Starter de teste ainda nao atualizado.")
+writefile("VykronHub/Tests/Arise-2.0-test24.lua",runtime)
+writefile("VykronHub/Tests/Iniciar-teste-2.0-test24.lua",starter)
 assert(loadstring(starter))()
-print("[VykronHub TEST23] Ative Farm > Auto Quest e selecione Diarias/Semanais ou Todas. Mantenha Auto Execute ligado para continuar apos teleportes.")
+print("[VykronHub TEST24] Ative Farm > Auto Quest e selecione Diarias/Semanais ou Todas. Mantenha Auto Execute ligado para continuar apos teleportes.")
