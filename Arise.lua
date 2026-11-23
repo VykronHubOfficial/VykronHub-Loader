@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST24-20261123"
+state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST25-20261123"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -1167,15 +1167,17 @@ function api.matches(job,read)
     return false
 end
 function api.enabled(settings)
+    if state.questProfiles then return settings.enabled==true and state.questProfiles.recurring(settings) end
     return settings.enabled==true and (settings.scope=="all" or settings.scope=="recurring")
 end
 local function finite(v)
     local n=tonumber(v)
     return n and n==n and n>=0 and n<math.huge and n or nil
 end
-function api.scan(definitions,read)
+function api.scan(definitions,read,settings)
     local groups,claims,blocked={},{},{}
     for _,bucket in ipairs({"Daily","Weekly","PassDaily","PassWeekly"}) do
+        if settings and state.questProfiles and not state.questProfiles.bucket(settings,bucket) then continue end
         local records=read("Quests",bucket)
         if type(records)~="table" then blocked[#blocked+1]={bucket=bucket,reason="loading"};continue end
         for id,record in pairs(records) do
@@ -1227,6 +1229,63 @@ function api.validJourney(job)
         or (job.phase~="entry" and job.phase~="inside") then return false end
     local action=actions[job.goal]
     return action~=nil and action.kind=="mode" and action.mode==job.mode
+end
+end
+-- Quest objectives: preserve legacy scopes while routing new profiles through explicit groups.
+do
+local api={}
+state.questProfiles=api
+function api.profile(q)
+    if q.profile=="progression" or q.profile=="limitbreaker" or q.profile=="custom" then return q.profile end
+    return q.scope=="islands" and "progression" or "custom"
+end
+function api.progression(q)
+    if q.progression=="islands" or q.progression=="world" or q.progression=="both" then return q.progression end
+    return q.scope=="all" and "both" or "islands"
+end
+function api.groups(q)
+    local profile=api.profile(q)
+    if profile=="progression" then
+        local which=api.progression(q)
+        return {islands=which~="world",world=which~="islands",daily=false,weekly=false,pass=false}
+    elseif profile=="limitbreaker" then
+        return {islands=false,world=false,daily=q.resetScope~="weekly",weekly=q.resetScope~="daily",pass=false}
+    end
+    if type(q.questGroups)=="table" then
+        local groups={}
+        for _,key in ipairs({"islands","world","daily","weekly","pass"}) do groups[key]=q.questGroups[key]==true end
+        return groups
+    end
+    return {islands=q.scope=="all",world=q.scope=="all",daily=true,weekly=true,pass=true}
+end
+function api.bucket(q,bucket)
+    local groups=api.groups(q)
+    return bucket=="Daily" and groups.daily or bucket=="Weekly" and groups.weekly or (bucket=="PassDaily" or bucket=="PassWeekly") and groups.pass or false
+end
+function api.recurring(q) local g=api.groups(q);return g.daily or g.weekly or g.pass end
+function api.resetAllowed(q)
+    local g=api.groups(q);return api.profile(q)~="progression" and (g.daily or g.weekly)
+end
+function api.refill(q) return api.resetAllowed(q) and q.refillTickets~=false end
+function api.owns(q,job)
+    if not job then return true end
+    if job.bucket=="TicketFarm" then return api.refill(q) end
+    if job.bucket then return api.bucket(q,job.bucket) end
+    return api.groups(q).world
+end
+function api.restore(q,saved)
+    if saved.profile=="progression" or saved.profile=="limitbreaker" or saved.profile=="custom" then q.profile=saved.profile end
+    if saved.progression=="islands" or saved.progression=="world" or saved.progression=="both" then q.progression=saved.progression end
+    if type(saved.questGroups)=="table" then
+        local result,any={},false
+        for _,key in ipairs({"islands","world","daily","weekly","pass"}) do result[key]=saved.questGroups[key]==true;any=any or result[key] end
+        if any then q.questGroups=result end
+    end
+    if type(saved.refillTickets)=="boolean" then q.refillTickets=saved.refillTickets end
+end
+function api.syncScope(q)
+    local g=api.groups(q)
+    q.scope=g.world and "all" or (g.daily or g.weekly or g.pass) and "recurring" or "islands"
 end
 end
 local sellRanks = {}
@@ -1587,7 +1646,7 @@ local function farmEnabled()
     if state.panic then return false end
     if state.autoLeaving then return false end
     if state.questPriorityActive and state.questPriorityActive() then
-        if insideDungeon() then return autoQuest.journey~=nil and autoQuest.journey.enterRequested==true and state.recurringRunMatches(autoQuest.journey) end
+        if insideDungeon() then return autoQuest.journey~=nil and autoQuest.journey.enterRequested==true and (not autoQuest.journey.bucket or state.recurringRunMatches(autoQuest.journey)) end
         if events.active then return state.questWantsEvent(events.active) end
         return questRuntime.combat==true
     end
@@ -1853,6 +1912,10 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
                 beforeSignature=type(reset.beforeSignature)=="string" and reset.beforeSignature or nil,beforeTotal=tonumber(reset.beforeTotal),useBefore=tonumber(reset.useBefore)}
         end
         autoQuest.scope = saved.autoQuest.scope == "all" and "all" or saved.autoQuest.scope == "recurring" and "recurring" or "islands"
+        if state.questProfiles then
+            state.questProfiles.restore(autoQuest,saved.autoQuest)
+            if autoQuest.profile then state.questProfiles.syncScope(autoQuest) end
+        end
         if type(saved.autoQuest.worldVisits) == "table" then
             for _, world in ipairs({"1", "2", "3"}) do
                 local at = saved.autoQuest.worldVisits[world]
@@ -8605,7 +8668,7 @@ do
     function state.syncCastleAFK(forceRestore)
         prepare()
         local owned = state.castleAFK
-        local quest=state.recurringQuestPolicy.enabled(autoQuest)
+        local quest=state.questPriorityActive and state.questPriorityActive() or state.recurringQuestPolicy.enabled(autoQuest)
         if not forceRestore and quest then
             local mode=autoQuest.journey and autoQuest.journey.mode or "waiting"
             state.syncQuestAFK(mode);owned.status="Auto Quest: AFK limitado ao modo exigido ("..mode..").";return
@@ -10116,6 +10179,7 @@ do
         attempts, started, finishAt, wasInside = 0, nil, nil, false
         save()
     end
+    if state.questProfiles then state.questProfiles.resetWorldRun=clearJob end
     local function canTest(records)
         rankGate = rankGate or require(shared.RankGate)
         tests = tests or require(storage.Indexer.DgTestInfo)
@@ -10132,7 +10196,7 @@ do
         if not job then return true end
         if job.bucket then return state.recurringEntryGuard(job,inside) end
         if inside then return false, "Missão de Mundo em andamento; aguardando conclusão." end
-        if not autoQuest.enabled or autoQuest.scope ~= "all" then return false, "Missões de Mundo pausadas." end
+        if not autoQuest.enabled or (state.questProfiles and not state.questProfiles.groups(autoQuest).world or not state.questProfiles and autoQuest.scope ~= "all") then return false, "Missões de Mundo pausadas." end
         if state.collectionPriority() or events.active or state.leaving or state.rebirthing then
             return false, "Aguardando o evento prioritário."
         end
@@ -10147,7 +10211,7 @@ do
         if autoQuest.journey and autoQuest.journey.bucket then return false end
         questRuntime.worldStatus = nil
         local inside = insideDungeon()
-        if not autoQuest.enabled or autoQuest.scope ~= "all" then
+        if not autoQuest.enabled or (state.questProfiles and not state.questProfiles.groups(autoQuest).world or not state.questProfiles and autoQuest.scope ~= "all") then
             questRuntime.modeRequest = nil
             if autoQuest.journey and not inside then clearJob() end
             return false
@@ -10289,6 +10353,7 @@ do
     if category then
         local options = state.controlButton("AutoQuestObjectives", "Objetivos Quest", category)
         connectUI(options, function()
+            if state.questProfiles and state.questProfiles.menu then state.questProfiles.menu();return end
             choose("Objetivos do Auto Quest", {{id = "islands", name = "Somente ilhas"}, {id = "recurring", name = "Diárias, semanais e passe"}, {id = "all", name = "Todas as missões"}}, function(id)
                 autoQuest.scope = id
                 questRuntime.filter,questRuntime.destination,questRuntime.combat=nil,nil,false
@@ -10327,7 +10392,7 @@ function state.questWantsEvent(kind)
     return policy.enabled(autoQuest) and not state.panic and api.demands[kind]==true
 end
 function state.questPriorityActive()
-    return policy.enabled(autoQuest) and not state.panic and not state.stopped
+    return (state.questProfiles and autoQuest.enabled==true or policy.enabled(autoQuest)) and not state.panic and not state.stopped
 end
 function state.questPriorityAllows(kind)
     return not state.questPriorityActive() or api.demands[kind]==true
@@ -10451,6 +10516,7 @@ function state.recurringQuestStep()
     questRuntime.recurringStatus=nil
     api.demands={}
     if not policy.enabled(autoQuest) then
+        api.stage=nil;api.hasModePending=false
         if autoQuest.journey and autoQuest.journey.bucket and not insideDungeon() then clearJob() end
         return false
     end
@@ -10459,7 +10525,7 @@ function state.recurringQuestStep()
         local ok,result=pcall(api.testPersist)
         if not ok or result==false then return false end
     end
-    local groups,claims,blocked=policy.scan(definitions,clientData.Get)
+    local groups,claims,blocked=policy.scan(definitions,clientData.Get,autoQuest)
     api.groups,api.blocked=groups,blocked
     api.hasModePending=false
     for _,group in ipairs(groups) do if group.kind=="mode" then api.hasModePending=true end end
@@ -10494,7 +10560,7 @@ function state.recurringQuestStep()
         end
     end
     local stock,capacity=state.questTicketStock()
-    local refill=stock~=nil and (stock<=0 or state.questReset and state.questReset.shortage==true) and (not capacity or stock<capacity)
+    local refill=(not state.questProfiles or state.questProfiles.refill(autoQuest)) and stock~=nil and (stock<=0 or state.questReset and state.questReset.shortage==true) and (not capacity or stock<capacity)
     if refill and (not job or job.bucket~="TicketFarm") then
         api.demands={};api.hasModePending=true
         if not capacity then message("Auto Quest: aguardando capacidade nativa de Tickets para a Trial.");return true end
@@ -10629,6 +10695,57 @@ function state.recurringQuestStep()
     return firstStage~=nil or autoQuest.scope=="recurring"
 end
 end
+-- Live profile changes use the existing quest entry/exit and saved preferences.
+do
+local api=state.questProfiles
+function api.commit(profile,detail)
+    if profile~="progression" and profile~="limitbreaker" and profile~="custom" then return false end
+    local previous=table.clone(autoQuest)
+    local inherited=api.groups(autoQuest)
+    local previousProgression=api.progression(autoQuest)
+    autoQuest.profile=profile
+    if profile=="progression" then
+        if detail and detail~="islands" and detail~="world" and detail~="both" then autoQuest.profile=previous.profile;return false end
+        autoQuest.progression=detail or autoQuest.progression or (api.profile(previous)=="progression" and previousProgression or "both")
+    elseif profile=="custom" then
+        local groups=type(detail)=="table" and detail or autoQuest.questGroups or inherited
+        autoQuest.questGroups={};local any=false
+        for _,key in ipairs({"islands","world","daily","weekly","pass"}) do autoQuest.questGroups[key]=groups[key]==true;any=any or autoQuest.questGroups[key] end
+        if not any then autoQuest.profile=previous.profile;autoQuest.questGroups=previous.questGroups;api.problem="Selecione pelo menos um grupo de missões.";return false end
+    end
+    api.syncScope(autoQuest)
+    if not save() then
+        for key in pairs(autoQuest) do autoQuest[key]=nil end
+        for key,value in pairs(previous) do autoQuest[key]=value end
+        api.problem="Falha ao salvar o objetivo do Auto Quest.";return false
+    end
+    api.problem=nil
+    questRuntime.islandsDone=nil
+    questRuntime.filter,questRuntime.destination,questRuntime.combat=nil,nil,false
+    questRuntime.modeRequest=nil;state.target,state.searchPosition=nil,nil;generation+=1
+    if state.recurringQuests then state.recurringQuests.demands={} end
+    if api.refresh then api.refresh() end
+    return true
+end
+function api.transition()
+    local job=autoQuest.journey
+    if not job or api.owns(autoQuest,job) then return false end
+    questRuntime.modeRequest=nil;questRuntime.combat=false
+    if insideDungeon() then
+        state.autoLeaving=true
+        if os.clock()>=(api.exitAt or 0) then api.exitAt=os.clock()+8;state.requestDungeonExit() end
+        questStatus.Text="Auto Quest: saindo da tarefa anterior para aplicar o novo objetivo.";return true
+    end
+    local mode=dungeonMode({mode=job.mode})
+    local room=partyClient.GetRoom(mode.event)
+    if room and room.Leader==player.UserId and not room.Locked then general:Fire({Event=mode.event,Action="Leave"}) end
+    if not job.bucket and api.resetWorldRun then api.resetWorldRun();return true end
+    local previousResume=autoQuest.ticketResume
+    autoQuest.journey=nil;autoQuest.ticketResume=nil;state.autoLeaving=nil;api.exitAt=nil
+    if not save() then autoQuest.journey=job;autoQuest.ticketResume=previousResume;api.problem="Falha ao salvar a troca de tarefa." end
+    return true
+end
+end
 
     local lastKey, sent = nil, {}
     local function request(key, payload)
@@ -10652,12 +10769,17 @@ end
                     questStatus.Text = "Auto Quest desligado."
                     return
                 end
+                if state.questProfiles and state.questProfiles.transition() then return end
                 if state.recurringQuestStep and state.recurringQuestStep() then return end
                 if autoQuest.scope == "recurring" then
                     questStatus.Text=questRuntime.recurringStatus or "Auto Quest: nenhuma missão periódica pendente."
                     return
                 end
+                if state.questProfiles and not state.questProfiles.groups(autoQuest).islands then questRuntime.islandsDone=true end
                 if state.worldQuestStep and state.worldQuestStep() then return end
+                if state.questProfiles and not state.questProfiles.groups(autoQuest).islands then
+                    questStatus.Text=questRuntime.worldStatus or "Auto Quest: aguardando os grupos selecionados.";return
+                end
                 if state.collectionPriority() or events.active or insideDungeon() or state.leaving or state.rebirthing or os.clock() < (state.entryUntil or 0) then
                     questStatus.Text = "Auto Quest pausado: partida ou rebirth em andamento." return
                 end
@@ -12493,6 +12615,7 @@ local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.lang
 local api={status=tr("Auto Reset Quests desligado.","Auto Reset Quests is off.","Auto Reset Quests desactivado."),emptyAt={},claimAt={},nextAt=0,interval=autoQuest.resetInterval or 0}
 state.questReset=api
 function api.includes(bucket)
+    if state.questProfiles and not state.questProfiles.bucket(autoQuest,bucket) then return false end
     local scope=autoQuest.resetScope or "both"
     return scope=="daily" and bucket=="Daily" or scope=="weekly" and bucket=="Weekly" or scope~="daily" and scope~="weekly"
 end
@@ -12502,6 +12625,10 @@ function api.setScope(scope)
     autoQuest.resetScope=scope;autoQuest.resetDue=nil
     if not save() then autoQuest.resetScope=previous;autoQuest.resetDue=previousDue;api.status=tr("Auto Reset: falha ao salvar o grupo escolhido.","Auto Reset: could not save selected group.","Auto Reset: error al guardar el grupo elegido.");return false end
     api.emptyAt={};api.shortage=false
+    if state.questProfiles then
+        if state.recurringQuests then state.recurringQuests.demands={} end
+        if state.questProfiles.refresh then state.questProfiles.refresh() end
+    end
     return true
 end
 function api.board(records,definitions)
@@ -12570,6 +12697,9 @@ function api.step(now)
         api.status=tr("Auto Reset: pausado enquanto a Trial repõe Tickets.","Auto Reset: paused while Trial refills Tickets.","Auto Reset: pausado mientras Trial repone Tickets.");return
     end
     api.shortage=false
+    if state.questProfiles and (not state.questProfiles.resetAllowed(autoQuest) or not api.includes("Daily") and not api.includes("Weekly")) then
+        api.status=tr("Auto Reset: desativado para os grupos deste objetivo.","Auto Reset: unavailable for this objective's groups.","Auto Reset: desactivado para los grupos de este objetivo.");return
+    end
     if now<api.nextAt then return end
     local blockedMessage
     local interval=autoQuest.resetInterval or 0
@@ -14585,6 +14715,9 @@ state.hubParts.farm = function(H)
                 return uiState.language=="PT" and "Ambos" or uiState.language=="ES" and "Ambos" or "Both"
             end
             local function updateScope()
+                if state.questProfiles and state.questProfiles.profile(autoQuest)=="limitbreaker" then
+                    scopeButton.Title.Text=(uiState.language=="PT" and "Missões / reset: " or uiState.language=="ES" and "Misiones / reinicio: " or "Quests / reset: ")..scopeName(autoQuest.resetScope or "both").." >";return
+                end
                 scopeButton.Title.Text=(uiState.language=="PT" and "Resetar: " or uiState.language=="ES" and "Reiniciar: " or "Reset: ")..scopeName(autoQuest.resetScope or "both").." >"
             end
             connectUI(scopeButton,function()
@@ -14621,8 +14754,10 @@ state.hubParts.farm = function(H)
             table.insert(periodic,updateReset);updateReset()
         end
         -- QUEST RESET UI END
+        if state.hubParts.questProfiles then state.hubParts.questProfiles(H) end
 		local lastScope
 		local function refreshScope()
+            if state.questProfiles and state.questProfiles.menu then return end
 			if lastScope == autoQuest.scope then return end
 			lastScope = autoQuest.scope
 			questButton.Title.Text = "▤  Objetivos Quest: " .. (autoQuest.scope == "all" and "Todas as missões" or autoQuest.scope == "recurring" and "Diárias, semanais e passe" or "Somente ilhas")
@@ -14660,6 +14795,129 @@ state.hubParts.farm = function(H)
 			activity.Stat_Pumpkins.Text = state.translate("Pumpkins: ") .. tostring(pumpkin.collected or 0)
 			activity.Stat_Quests.Text = state.translate("Quests: ") .. "—"
 		end)
+end
+-- One Auto Quest switch, with dedicated objective settings and a readable status card.
+state.hubParts.questProfiles=function(H)
+    local hub,panel=H.hub,H.farm.Progress
+    local api=state.questProfiles
+    local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.language=="ES" and es or en end
+    local function profileName(id)
+        if id=="progression" then return tr("Progressão","Progression","Progresión") end
+        if id=="limitbreaker" then return tr("Farm Limit Breaker","Limit Breaker Farm","Farm Limit Breaker") end
+        return tr("Personalizado","Custom","Personalizado")
+    end
+    local page=hub.pages.FarmHouses:Clone();page.Name="FarmQuests"
+    for _,child in ipairs(page:GetChildren()) do child:Destroy() end
+    page.Visible=false;page.CanvasSize=UDim2.fromOffset(0,0);page.Parent=hub.pages
+    local function card(name,height)
+        local frame=make("Frame",{Name=name,Size=UDim2.new(1,-12,0,height),Position=UDim2.fromOffset(6,8),BackgroundColor3=colors.bg,BorderSizePixel=0},page)
+        make("UIStroke",{Color=colors.accent,Transparency=0.65,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border},frame)
+        return frame
+    end
+    local objectives=card("Objectives",100)
+    local resetCard=card("ResetSettings",218)
+    local status=card("QuestStatus",184)
+    local template=panel.Act_QuestObjectives
+    local function action(name,parent,y)
+        local b=template:Clone();b.Name=name
+        for _,key in ipairs({"Action","MirrorText","QuestScopeLabel"}) do b:SetAttribute(key,nil) end
+        b.Position=UDim2.fromOffset(12,y);b.Size=UDim2.new(1,-24,0,34);b.Parent=parent
+        return b
+    end
+    local profileButton=action("Act_Profile",objectives,10)
+    local groupsButton=action("Act_ProfileGroups",objectives,54)
+    -- Relocate the TEST24 controls; retain their original handlers and native reset icon.
+    local reset=panel.Row_AutoResetQuests;reset.Parent=resetCard;reset.Position=UDim2.fromOffset(8,8)
+    local resetScope=panel.Act_QuestResetScope;resetScope.Parent=resetCard;resetScope.Position=UDim2.fromOffset(44,66)
+    local interval=panel.Row_QuestResetInterval;interval.Parent=resetCard;interval.Position=UDim2.fromOffset(8,104)
+    local refill=reset:Clone();refill.Name="Row_TicketRefill";refill.Position=UDim2.fromOffset(8,154);refill.Parent=resetCard
+    local resetBottom=template.Position.Y.Offset+template.Size.Y.Offset
+    for _,child in ipairs(panel:GetChildren()) do
+        if child:IsA("GuiObject") and child~=template and child.Position.Y.Offset>=resetBottom+142 then child.Position-=UDim2.fromOffset(0,142) end
+    end
+    panel.Size-=UDim2.fromOffset(0,142)
+    local rows={}
+    make("TextLabel",{Name="Heading",Size=UDim2.new(1,-24,0,22),Position=UDim2.fromOffset(12,8),BackgroundTransparency=1,Text="AUTO QUEST",Font=Enum.Font.GothamBold,TextSize=13,TextColor3=colors.text,TextXAlignment=Enum.TextXAlignment.Left},status)
+    for index,name in ipairs({"Objective","Mission","Stage","Reset","OtherAutomation"}) do
+        rows[name]=make("TextLabel",{Name=name,Size=UDim2.new(1,-24,0,index==2 and 42 or 22),Position=UDim2.fromOffset(12,32+(index-1)*26+(index>2 and 16 or 0)),BackgroundTransparency=1,Text="",Font=Enum.Font.GothamMedium,TextSize=12,TextColor3=colors.text,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,TextWrapped=true,TextTruncate=Enum.TextTruncate.AtEnd},status)
+    end
+    local function showProfileMenu()
+        local options={}
+        for _,id in ipairs({"progression","limitbreaker","custom"}) do options[#options+1]={id=id,name=profileName(id),selected=api.profile(autoQuest)==id} end
+        choose(tr("Objetivo do Auto Quest","Auto Quest objective","Objetivo de Auto Quest"),options,function(id) api.commit(id) end)
+    end
+    local function showGroups()
+        if api.profile(autoQuest)=="progression" then
+            local options={
+                {id="islands",name=tr("Somente ilhas","Islands only","Solo islas"),selected=api.progression(autoQuest)=="islands"},
+                {id="world",name=tr("Somente mundo","World only","Solo mundo"),selected=api.progression(autoQuest)=="world"},
+                {id="both",name=tr("Ambos","Both","Ambos"),selected=api.progression(autoQuest)=="both"}}
+            choose(profileName("progression"),options,function(id) api.commit("progression",id) end)
+        else
+            local g=api.groups(autoQuest)
+            local names={islands=tr("Missões das ilhas","Island quests","Misiones de islas"),world=tr("Missões de mundo","World quests","Misiones de mundo"),daily=tr("Diárias","Daily","Diarias"),weekly=tr("Semanais","Weekly","Semanales"),pass=tr("Passe","Pass","Pase")}
+            local options={{id="done",name=tr("Concluir seleção","Finish selection","Finalizar selección")}}
+            for _,key in ipairs({"islands","world","daily","weekly","pass"}) do options[#options+1]={id=key,name=names[key],selected=g[key]} end
+            choose(profileName("custom"),options,function(id)
+                if id=="done" then return end
+                g[id]=not g[id];api.commit("custom",g);showGroups()
+            end)
+        end
+    end
+    local function scopeName()
+        local value=autoQuest.resetScope or "both"
+        return value=="daily" and tr("Somente diárias","Daily only","Solo diarias") or value=="weekly" and tr("Somente semanais","Weekly only","Solo semanales") or tr("Ambos","Both","Ambos")
+    end
+    local function update()
+        local profile=api.profile(autoQuest)
+        template.Title.Text=tr("Objetivo: ","Objective: ","Objetivo: ")..profileName(profile).." >"
+        profileButton.Title.Text=profileName(profile).." >"
+        groupsButton.Visible=profile~="limitbreaker"
+        if profile=="progression" then
+            local choice=api.progression(autoQuest)
+            groupsButton.Title.Text=(choice=="islands" and tr("Somente ilhas","Islands only","Solo islas") or choice=="world" and tr("Somente mundo","World only","Solo mundo") or tr("Ilhas e mundo","Islands and world","Islas y mundo")).." >"
+        else groupsButton.Title.Text=tr("Escolher grupos de missões >","Choose quest groups >","Elegir grupos de misiones >") end
+        objectives.Size=UDim2.new(1,-12,0,groupsButton.Visible and 100 or 56)
+        resetCard.Visible=api.resetAllowed(autoQuest)
+        resetCard.Position=UDim2.fromOffset(6,objectives.Position.Y.Offset+objectives.Size.Y.Offset+12)
+        status.Position=UDim2.fromOffset(6,resetCard.Visible and resetCard.Position.Y.Offset+resetCard.Size.Y.Offset+12 or resetCard.Position.Y.Offset)
+        page.CanvasSize=UDim2.fromOffset(0,status.Position.Y.Offset+status.Size.Y.Offset+12)
+        refill.Title.Text=tr("Repor Tickets na Trial","Refill Tickets in Trial","Reponer Tickets en Trial")
+        refill.Caption.Text=tr("Até atingir a capacidade da conta.","Until reaching this account's capacity.","Hasta alcanzar la capacidad de la cuenta.")
+        H.paint(refill.Toggle,autoQuest.refillTickets~=false)
+        local job=autoQuest.journey
+        local active=autoQuest.enabled==true
+        rows.Objective.Text=tr("Objetivo: ","Objective: ","Objetivo: ")..profileName(profile)
+        rows.Mission.Text=tr("Missão atual: ","Current quest: ","Misión actual: ")..(api.problem or (not active and tr("Desligado","Off","Desactivado") or job and (job.name or job.id) or questStatus.Text or tr("Aguardando objetivo","Waiting for objective","Esperando objetivo")))
+        if active and job and job.bucket then
+            if job.bucket=="TicketFarm" then
+                local current,maximum=state.questTicketStock()
+                if current and maximum then rows.Mission.Text=tr("Tickets: ","Tickets: ","Tickets: ")..current.."/"..maximum end
+            else
+                local records=clientData.Get("Quests",job.bucket)
+                local record=type(records)=="table" and records[job.id]
+                local progress=type(record)=="table" and type(record.Progress)=="table" and record.Progress[job.goal]
+                if type(progress)=="table" then rows.Mission.Text=tr("Missão atual: ","Current quest: ","Misión actual: ")..(job.name or job.id).." · "..tostring(progress.Current or 0).."/"..tostring(progress.Max or "?") end
+            end
+        end
+        local stage=state.recurringQuests and state.recurringQuests.stage
+        local stages={tr("Ilhas","Islands","Islas"),tr("Dungeons","Dungeons","Dungeons"),tr("Raids","Raids","Raids"),tr("Castelos e outros modos","Castles and other modes","Castillos y otros modos")}
+        rows.Stage.Text=tr("Etapa: ","Stage: ","Etapa: ")..(job and job.bucket=="TicketFarm" and tr("Trial · reposição de Tickets","Trial · Ticket refill","Trial · reposición de Tickets") or stages[stage] or profileName(profile))
+        local resetText=autoQuest.resetQuests and resetCard.Visible and scopeName().." · "..((autoQuest.resetInterval or 0)==0 and tr("ao concluir","on completion","al completar") or tostring(autoQuest.resetInterval).."s") or tr("Desligado","Off","Desactivado")
+        if autoQuest.resetQuests and resetCard.Visible and not state.questReset.includes("Daily") and not state.questReset.includes("Weekly") then resetText=tr("Escolha um grupo de reset compatível.","Select a matching reset group.","Elige un grupo de reinicio compatible.") end
+        rows.Reset.Text=tr("Reset: ","Reset: ","Reinicio: ")..resetText
+        rows.OtherAutomation.Text=tr("Demais automações: ","Other automations: ","Otras automatizaciones: ")..(active and tr("pausadas","paused","pausadas") or tr("liberadas","available","disponibles"))
+    end
+    api.refresh=update
+    api.menu=function() state.newHubShow("FarmQuests",true);update() end
+    connectUI(profileButton,showProfileMenu)
+    connectUI(groupsButton,showGroups)
+    connectUI(refill.Toggle,function()
+        local old=autoQuest.refillTickets;autoQuest.refillTickets=old==false
+        if not save() then autoQuest.refillTickets=old;api.problem=tr("Falha ao salvar a reposição de Tickets.","Could not save Ticket refill.","Error al guardar reposición de Tickets.") end
+        update()
+    end)
+    table.insert(H.periodic,update);update()
 end
 -- Farm: grouped raid controls and independently collapsible category headers.
 -- Recebe do nucleo (new-hub-view.lua): hub, link, bindText.
@@ -17589,6 +17847,7 @@ function state.installNewHub()
 		Farm = {"⚔️", "FARM", "Combate, progressão e eventos.", "Farm"},
 		FarmAttributes = {"⚙", "ATRIBUTOS", "Metas e distribuição", "Farm"},
 		FarmHouses = {"🏠", "CASAS", "Escolha de coleta", "Farm"},
+        FarmQuests = {"📜", "AUTO QUESTS", "Objetivos e prioridades", "Farm"},
 		FarmGuild = {"🏰", "GUILDA", "Seleção de chefe", "Farm"},
 		DungeonMain = {"🛡️", "DUNGEON", "›   Principal", "DungeonMain"},
 		DungeonModes = {"🛡️", "DUNGEON", "›   Selecionar Modo", "DungeonMain"},
@@ -17629,7 +17888,7 @@ function state.installNewHub()
 		if info then
 			left.Icon.Text, left.Title.Text, left.Sub.Text = info[1], info[2], info[3]
 			setActiveTab(info[4])
-			local sub = name == "FarmAttributes" or name == "FarmHouses" or name == "FarmGuild"
+			local sub = name == "FarmAttributes" or name == "FarmHouses" or name == "FarmGuild" or name == "FarmQuests"
 			left.Title.Size = UDim2.fromOffset(sub and 110 or 65, 28)
 		end
 		hub.pageHeader.Back.Visible = #stack > 0
