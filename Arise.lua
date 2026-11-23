@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST25-20261123"
+state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST27-20261123"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -1183,6 +1183,7 @@ function api.scan(definitions,read,settings)
         for id,record in pairs(records) do
             if type(record)~="table" then continue end
             local name=record.Name or id
+            if settings and settings.splitQuests and state.limitBreaker and not state.limitBreaker.selected(settings,bucket,name) then continue end
             local definition=definitions[bucket] and definitions[bucket][name]
             if not definition or definition.DontShow then continue end
             if record.Completed==true then
@@ -1209,10 +1210,22 @@ function api.scan(definitions,read,settings)
     end
     local list={}
     for _,group in pairs(groups) do
-        table.sort(group.refs,function(a,b) return a.bucket..":"..a.id..":"..a.goal<b.bucket..":"..b.id..":"..b.goal end)
+        table.sort(group.refs,function(a,b)
+            if settings and settings.splitQuests and state.limitBreaker then
+                local x,y=state.limitBreaker.priority(settings,a),state.limitBreaker.priority(settings,b)
+                if x~=y then return x<y end
+            end
+            return a.bucket..":"..a.id..":"..a.goal<b.bucket..":"..b.id..":"..b.goal
+        end)
         list[#list+1]=group
     end
     table.sort(list,function(a,b)
+        if settings and settings.splitQuests and state.limitBreaker then
+            local x,y=math.huge,math.huge
+            for _,ref in ipairs(a.refs) do x=math.min(x,state.limitBreaker.priority(settings,ref)) end
+            for _,ref in ipairs(b.refs) do y=math.min(y,state.limitBreaker.priority(settings,ref)) end
+            if x~=y then return x<y end
+        end
         local x,y=api.stage(a),api.stage(b)
         if x~=y then return x<y end
         if #a.refs~=#b.refs then return #a.refs>#b.refs end
@@ -1231,11 +1244,51 @@ function api.validJourney(job)
     return action~=nil and action.kind=="mode" and action.mode==job.mode
 end
 end
+-- Saved per-definition priorities; active quest progress remains authoritative.
+do
+local api={}
+state.limitBreaker=api
+function api.enabled(q) return q.splitQuests==true and q.limitBreakerEnabled==true end
+function api.selected(q,bucket,id)
+    local settings=q.missionSelection
+    return not settings or not settings[bucket] or settings[bucket][id]~=false
+end
+function api.rank(q,bucket,id)
+    local order=q.missionOrder and q.missionOrder[bucket]
+    for index,value in ipairs(order or {}) do if value==id then return index end end
+    return 10000
+end
+function api.priority(q,ref)
+    local rank=api.rank(q,ref.bucket,ref.definitionId)
+    local strategy=q.missionStrategy or "interleave"
+    if strategy=="daily" then return (ref.bucket=="Daily" and 0 or 20000)+rank end
+    if strategy=="weekly" then return (ref.bucket=="Weekly" and 0 or 20000)+rank end
+    return rank*2+(ref.bucket=="Weekly" and 1 or 0)
+end
+function api.restore(q,saved)
+    if saved.splitQuests~=true then return end
+    q.splitQuests=true;q.progressionEnabled=saved.progressionEnabled==true;q.limitBreakerEnabled=saved.limitBreakerEnabled==true
+    q.missionStrategy=saved.missionStrategy=="daily" and "daily" or saved.missionStrategy=="weekly" and "weekly" or "interleave"
+    q.missionSelection={};q.missionOrder={}
+    for _,bucket in ipairs({"Daily","Weekly"}) do
+        q.missionSelection[bucket]={};q.missionOrder[bucket]={}
+        for id,value in pairs(type(saved.missionSelection)=="table" and type(saved.missionSelection[bucket])=="table" and saved.missionSelection[bucket] or {}) do
+            if type(id)=="string" and type(value)=="boolean" then q.missionSelection[bucket][id]=value end
+        end
+        local seen={}
+        for _,id in ipairs(type(saved.missionOrder)=="table" and type(saved.missionOrder[bucket])=="table" and saved.missionOrder[bucket] or {}) do
+            if type(id)=="string" and not seen[id] and #q.missionOrder[bucket]<150 then seen[id]=true;table.insert(q.missionOrder[bucket],id) end
+        end
+    end
+    if type(saved.resetSelectedSeen)=="table" then q.resetSelectedSeen={Daily=saved.resetSelectedSeen.Daily==true,Weekly=saved.resetSelectedSeen.Weekly==true} end
+end
+end
 -- Quest objectives: preserve legacy scopes while routing new profiles through explicit groups.
 do
 local api={}
 state.questProfiles=api
 function api.profile(q)
+    if q.splitQuests then return q.limitBreakerEnabled and "limitbreaker" or "progression" end
     if q.profile=="progression" or q.profile=="limitbreaker" or q.profile=="custom" then return q.profile end
     return q.scope=="islands" and "progression" or "custom"
 end
@@ -1262,18 +1315,20 @@ function api.bucket(q,bucket)
     local groups=api.groups(q)
     return bucket=="Daily" and groups.daily or bucket=="Weekly" and groups.weekly or (bucket=="PassDaily" or bucket=="PassWeekly") and groups.pass or false
 end
-function api.recurring(q) local g=api.groups(q);return g.daily or g.weekly or g.pass end
+function api.recurring(q) if q.splitQuests then return q.limitBreakerEnabled==true end;local g=api.groups(q);return g.daily or g.weekly or g.pass end
 function api.resetAllowed(q)
+    if q.splitQuests then return q.limitBreakerEnabled==true end
     local g=api.groups(q);return api.profile(q)~="progression" and (g.daily or g.weekly)
 end
 function api.refill(q) return api.resetAllowed(q) and q.refillTickets~=false end
 function api.owns(q,job)
     if not job then return true end
     if job.bucket=="TicketFarm" then return api.refill(q) end
-    if job.bucket then return api.bucket(q,job.bucket) end
+    if job.bucket then return api.bucket(q,job.bucket) and (not q.splitQuests or state.limitBreaker.selected(q,job.bucket,job.definitionId)) end
     return api.groups(q).world
 end
 function api.restore(q,saved)
+    state.limitBreaker.restore(q,saved)
     if saved.profile=="progression" or saved.profile=="limitbreaker" or saved.profile=="custom" then q.profile=saved.profile end
     if saved.progression=="islands" or saved.progression=="world" or saved.progression=="both" then q.progression=saved.progression end
     if type(saved.questGroups)=="table" then
@@ -1284,6 +1339,7 @@ function api.restore(q,saved)
     if type(saved.refillTickets)=="boolean" then q.refillTickets=saved.refillTickets end
 end
 function api.syncScope(q)
+    if q.splitQuests then q.enabled=q.progressionEnabled or q.limitBreakerEnabled;q.profile=q.limitBreakerEnabled and "limitbreaker" or "progression" end
     local g=api.groups(q)
     q.scope=g.world and "all" or (g.daily or g.weekly or g.pass) and "recurring" or "islands"
 end
@@ -1914,7 +1970,7 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
         autoQuest.scope = saved.autoQuest.scope == "all" and "all" or saved.autoQuest.scope == "recurring" and "recurring" or "islands"
         if state.questProfiles then
             state.questProfiles.restore(autoQuest,saved.autoQuest)
-            if autoQuest.profile then state.questProfiles.syncScope(autoQuest) end
+            if autoQuest.profile or autoQuest.splitQuests then state.questProfiles.syncScope(autoQuest) end
         end
         if type(saved.autoQuest.worldVisits) == "table" then
             for _, world in ipairs({"1", "2", "3"}) do
@@ -4520,6 +4576,10 @@ do
     questStatus = state.controlLabel("AutoQuestStatus", "Auto Quest desligado.", farmPage)
     toggleLook(questToggle, autoQuest.enabled)
     connectUI(questToggle, function()
+        if autoQuest.splitQuests then
+            state.limitBreaker.change(function(q) q.progressionEnabled=not q.progressionEnabled end)
+            toggleLook(questToggle,autoQuest.progressionEnabled);return
+        end
         autoQuest.enabled = not autoQuest.enabled
         autoQuest.advance, autoQuest.purchases = true, true
         questRuntime.combat, questRuntime.destination, questRuntime.island, questRuntime.filter = false, nil, nil, nil
@@ -10448,6 +10508,7 @@ end
 function state.recurringEntryGuard(job,inside)
     if not policy.enabled(autoQuest) or not policy.validJourney(job) then return false,tr("Missões periódicas pausadas.","Recurring quests paused.","Misiones periódicas pausadas.") end
     if inside then return false,tr("Missão em andamento.","Quest run in progress.","Misión en curso.") end
+    if state.rebirthing then return false,tr("Aguardando confirmação do renascimento.","Waiting for Rebirth confirmation.","Esperando confirmación del renacimiento.") end
     if player.GameplayPaused or state.panic or state.collectionPriority() or events.active then return false,tr("Aguardando atividade prioritária.","Waiting for priority activity.","Esperando actividad prioritaria.") end
     local record,loaded=jobRecord(job)
     if loaded and record and (record.Name or job.id)~=job.definitionId then return false,"Auto Quest: o objetivo mudou; conferindo a tarefa." end
@@ -10476,13 +10537,18 @@ local function farm(group)
     local selected,position,distance
     for id,info in pairs(mapInfo) do
         local spawn=info.World==world and spawns:FindFirstChild(id)
-        if spawn then
+        if spawn and (not info.Release or releases.IsOpen(info.Release)) then
             local point=spawn:GetPivot().Position
+            if autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest) then
+                api.islandWait=api.islandWait or {}
+                if os.clock()<(api.islandWait[id] or 0) then continue end
+
+            end
             local d=(point-root.Position).Magnitude
             if not distance or d<distance then selected,position,distance={id=id,info=info},point,d end
         end
     end
-    if not selected then return false end
+    if not selected then api.islandWait={};return false end
     local farmKey=group.activity..":"..selected.id
     if api.farmKey~=farmKey then
         api.farmKey=farmKey;state.target,state.map,state.searchPosition=nil,nil,nil;generation+=1
@@ -10509,7 +10575,13 @@ local function farm(group)
         end
     end
     questRuntime.combat=true
-    if not nearest(enemyFolder(),root.Position,nil,filter) then questRuntime.destination=position+Vector3.new(0,4,0) end
+    if not nearest(enemyFolder(),root.Position,nil,filter) then
+        questRuntime.destination=position+Vector3.new(0,4,0)
+        if autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest) then
+            if api.scanIsland~=selected.id then api.scanIsland=selected.id;api.scanAt=os.clock() end
+            if os.clock()-(api.scanAt or 0)>=3 then api.islandWait[selected.id]=os.clock()+12;api.scanIsland=nil end
+        end
+    else api.scanIsland=nil end
     return true
 end
 function state.recurringQuestStep()
@@ -10519,6 +10591,10 @@ function state.recurringQuestStep()
         api.stage=nil;api.hasModePending=false
         if autoQuest.journey and autoQuest.journey.bucket and not insideDungeon() then clearJob() end
         return false
+    end
+    if state.rebirthing then
+        questRuntime.modeRequest=nil;questRuntime.combat=false;questRuntime.destination=nil
+        message(tr("Auto Quest: aguardando confirmação do renascimento.","Auto Quest: waiting for Rebirth confirmation.","Auto Quest: esperando confirmación del renacimiento."));return true
     end
     if state.panic or player.GameplayPaused or not rootPart() then return false end
     if api.testPersist then
@@ -10549,18 +10625,26 @@ function state.recurringQuestStep()
     local job=autoQuest.journey
     if firstStage and job and job.bucket and job.bucket~="TicketFarm" then
         local action=policy.action(job.goal)
-        if action and policy.stage(action)>firstStage then
+        local superseded=action and policy.stage(action)>firstStage
+        if autoQuest.splitQuests then
+            local first=groups[1]
+            local ownRank=state.limitBreaker.priority(autoQuest,{bucket=job.bucket,definitionId=job.definitionId})
+            local best=math.huge
+            for _,ref in ipairs(first and first.refs or {}) do best=math.min(best,state.limitBreaker.priority(autoQuest,ref)) end
+            superseded=best<ownRank or not state.limitBreaker.selected(autoQuest,job.bucket,job.definitionId)
+        end
+        if superseded then
             questRuntime.modeRequest=nil
             if insideDungeon() then
                 state.autoLeaving=true
                 if os.clock()>=(api.exitAt or 0) then api.exitAt=os.clock()+8;state.requestDungeonExit() end
-                message("Auto Quest: retornando para os objetivos anteriores da fila.");return true
+                message("Limit Breaker: retornando para respeitar a prioridade escolhida.");return true
             end
             clearJob();job=nil
         end
     end
     local stock,capacity=state.questTicketStock()
-    local refill=(not state.questProfiles or state.questProfiles.refill(autoQuest)) and stock~=nil and (stock<=0 or state.questReset and state.questReset.shortage==true) and (not capacity or stock<capacity)
+    local refill=(not autoQuest.splitQuests or autoQuest.resetQuests==true and state.questReset and state.questReset.shortage==true) and (not state.questProfiles or state.questProfiles.refill(autoQuest)) and stock~=nil and (stock<=0 or state.questReset and state.questReset.shortage==true) and (not capacity or stock<capacity)
     if refill and (not job or job.bucket~="TicketFarm") then
         api.demands={};api.hasModePending=true
         if not capacity then message("Auto Quest: aguardando capacidade nativa de Tickets para a Trial.");return true end
@@ -10655,7 +10739,8 @@ function state.recurringQuestStep()
     if events.active then message(tr("Auto Quest: evento em andamento — ","Auto Quest: event in progress — ","Auto Quest: evento en curso — ")..events.active);return true end
     if state.collectionPriority() or state.leaving or state.rebirthing or os.clock()<(state.entryUntil or 0) or state.raidTravel then return false end
     local waiting={}
-    for _,group in ipairs(groups) do
+    for groupIndex,group in ipairs(groups) do
+        if autoQuest.splitQuests and groupIndex>1 then break end
         if firstStage and policy.stage(group)~=firstStage then continue end
         if group.kind=="event" then
             message(tr("Auto Quest: aguardando a raid exigida antes dos castelos e desertos.","Auto Quest: waiting for the required raid before castles and deserts.","Auto Quest: esperando la raid requerida antes de castillos y desiertos."));return true
@@ -10703,6 +10788,10 @@ function api.commit(profile,detail)
     local previous=table.clone(autoQuest)
     local inherited=api.groups(autoQuest)
     local previousProgression=api.progression(autoQuest)
+    if autoQuest.splitQuests then
+        if profile=="custom" then api.problem="Use os controles separados de Progressão e Limit Breaker.";return false end
+        autoQuest.limitBreakerEnabled=profile=="limitbreaker"
+    end
     autoQuest.profile=profile
     if profile=="progression" then
         if detail and detail~="islands" and detail~="world" and detail~="both" then autoQuest.profile=previous.profile;return false end
@@ -10745,6 +10834,64 @@ function api.transition()
     if not save() then autoQuest.journey=job;autoQuest.ticketResume=previousResume;api.problem="Falha ao salvar a troca de tarefa." end
     return true
 end
+function api.splitInit()
+    if autoQuest.splitQuests then return end
+    local groups=api.groups(autoQuest)
+    autoQuest.progressionEnabled=autoQuest.enabled and (groups.islands or groups.world)
+    autoQuest.limitBreakerEnabled=autoQuest.enabled and (groups.daily or groups.weekly)
+    autoQuest.progression=api.progression(autoQuest);autoQuest.splitQuests=true
+    autoQuest.missionOrder=autoQuest.missionOrder or {}
+    for _,bucket in ipairs({"Daily","Weekly"}) do
+        if not autoQuest.missionOrder[bucket] then
+            local order={};for _,row in ipairs(state.limitBreaker.catalog(bucket)) do order[#order+1]=row.id end
+            autoQuest.missionOrder[bucket]=order
+        end
+    end
+    api.syncScope(autoQuest);save()
+end
+function state.limitBreaker.change(mutator)
+    local previous=Http:JSONEncode(autoQuest)
+    mutator(autoQuest);api.syncScope(autoQuest)
+    if not save() then
+        local old=Http:JSONDecode(previous)
+        for key in pairs(autoQuest) do autoQuest[key]=nil end
+        for key,value in pairs(old) do autoQuest[key]=value end
+        api.problem="Falha ao salvar as opções do Limit Breaker.";return false
+    end
+    questRuntime.modeRequest=nil;questRuntime.combat=false;state.target=nil
+    if state.recurringQuests then state.recurringQuests.demands={} end
+    if api.refresh then api.refresh() end
+    return true
+end
+function state.limitBreaker.catalog(bucket)
+    local definitions=require(storage.Indexer.QuestsInfo)[bucket] or {}
+    local rows={}
+    for id,definition in pairs(definitions) do
+        if type(definition)=="table" and not definition.DontShow then
+            local stage=5
+            for goal in pairs(definition.Goals or {}) do
+                local action=state.recurringQuestPolicy.action(goal)
+                if action then stage=math.min(stage,state.recurringQuestPolicy.stage(action)) end
+            end
+            rows[#rows+1]={id=id,name=definition.Name or id,stage=stage}
+        end
+    end
+    table.sort(rows,function(a,b)
+        local x,y=state.limitBreaker.rank(autoQuest,bucket,a.id),state.limitBreaker.rank(autoQuest,bucket,b.id)
+        if x~=y then return x<y end
+        if a.stage~=b.stage then return a.stage<b.stage end
+        return a.name<b.name
+    end)
+    return rows
+end
+function state.limitBreaker.move(bucket,id,target)
+    local rows=state.limitBreaker.catalog(bucket);local order={};local current
+    for index,row in ipairs(rows) do order[index]=row.id;if row.id==id then current=index end end
+    if not current then return false end
+    table.remove(order,current);table.insert(order,math.clamp(target,1,#order+1),id)
+    return state.limitBreaker.change(function(q) q.missionOrder=q.missionOrder or {};q.missionOrder[bucket]=order end)
+end
+
 end
 
     local lastKey, sent = nil, {}
@@ -10769,6 +10916,13 @@ end
                     questStatus.Text = "Auto Quest desligado."
                     return
                 end
+                -- QUEST REBIRTH WAIT BEGIN
+                if state.rebirthing then
+                    questRuntime.modeRequest=nil
+                    questStatus.Text="Auto Quest: aguardando confirmação do renascimento."
+                    return
+                end
+                -- QUEST REBIRTH WAIT END
                 if state.questProfiles and state.questProfiles.transition() then return end
                 if state.recurringQuestStep and state.recurringQuestStep() then return end
                 if autoQuest.scope == "recurring" then
@@ -10915,7 +11069,7 @@ task.spawn(function()
     while alive do
         task.wait(1)
         if not alive then break end
-            if state.panic or state.questPriorityActive and state.questPriorityActive() then continue end
+            if state.panic then continue end
         local success, problem = pcall(function()
             local count = tonumber(clientData.Get("Rebirths")) or 0
             local level = tonumber(clientData.Get("Level")) or 1
@@ -12631,17 +12785,31 @@ function api.setScope(scope)
     end
     return true
 end
-function api.board(records,definitions)
+function api.board(records,definitions,bucket)
     if type(records)~="table" then return "loading",0 end
     local count,ready=0,0
+    local selected=autoQuest.splitQuests and bucket and state.limitBreaker
+    if selected then
+        local enabled=0
+        for id,definition in pairs(definitions or {}) do if not definition.DontShow and state.limitBreaker.selected(autoQuest,bucket,id) then enabled+=1 end end
+        if enabled==0 then return "disabled",0 end
+    end
     for id,record in pairs(records) do
         if type(record)~="table" then return "loading",0 end
         local definition=definitions and definitions[record.Name or id]
         if not definition then return "unknown",0 end
+        if selected and not state.limitBreaker.selected(autoQuest,bucket,record.Name or id) then continue end
+        if selected then
+            autoQuest.resetSelectedSeen=autoQuest.resetSelectedSeen or {}
+            if not autoQuest.resetSelectedSeen[bucket] then autoQuest.resetSelectedSeen[bucket]=true;if not save() then autoQuest.resetSelectedSeen[bucket]=nil;return "loading",0 end end
+        end
         count+=1
         if record.Completed==true and definition.NeedClaim==true then ready+=1 end
     end
-    if count==0 then return "empty",0 end
+    if count==0 then
+        if selected and not (autoQuest.resetSelectedSeen and autoQuest.resetSelectedSeen[bucket]) then return "unavailable",0 end
+        return "empty",0
+    end
     return ready>0 and "claim" or "working",count
 end
 local function tickets(id)
@@ -12667,6 +12835,7 @@ end
 api.pending=autoQuest.resetPending
 function api.step(now)
     local pending=autoQuest.resetPending;api.pending=pending
+    if autoQuest.splitQuests and not autoQuest.limitBreakerEnabled and not pending then api.shortage=false;api.status=tr("Auto Reset: Limit Breaker desligado.","Auto Reset: Limit Breaker is off.","Auto Reset: Limit Breaker desactivado.");return end
     if not autoQuest.resetQuests and not pending then api.status=tr("Auto Reset Quests desligado.","Auto Reset Quests is off.","Auto Reset Quests desactivado.");return end
     if not alive or state.stopped or state.panic or player.GameplayPaused then return end
     local ok,definitions,products=pcall(function() return require(storage.Indexer.QuestsInfo),require(storage.Indexer.ProductInfo).Products end)
@@ -12680,6 +12849,7 @@ function api.step(now)
         local changed=not pending.forced or signature~=pending.beforeSignature or total<(pending.beforeTotal or 0) or used and total==0
         if board~="empty" and changed then
             if persistPending(nil) then
+                if autoQuest.resetSelectedSeen then autoQuest.resetSelectedSeen[pending.bucket]=nil end
                 autoQuest.resetDue=autoQuest.resetDue or {};autoQuest.resetDue[pending.bucket]=now+(autoQuest.resetInterval or 0);save()
                 api.status=tr("Auto Reset: novas missões confirmadas.","Auto Reset: new quests confirmed.","Auto Reset: nuevas misiones confirmadas.");api.nextAt=now+5
             end
@@ -12709,14 +12879,14 @@ function api.step(now)
     end
     for _,bucket in ipairs({"Daily","Weekly"}) do
         if not api.includes(bucket) then api.emptyAt[bucket]=nil;continue end
-        local status=api.board(clientData.Get("Quests",bucket),definitions[bucket])
+        local status=api.board(clientData.Get("Quests",bucket),definitions[bucket],bucket)
         if status=="claim" then
             api.emptyAt[bucket]=nil
             if now>=(api.claimAt[bucket] or 0) then
                 api.claimAt[bucket]=now+8;general:Fire({Event="ClaimAllQuests",Type=bucket})
             end
             api.status=tr("Auto Reset: resgatando recompensas de ","Auto Reset: claiming rewards for ","Auto Reset: recogiendo recompensas de ")..bucket;return
-        elseif status=="empty" and interval==0 or interval>0 and status=="working" and now>=(autoQuest.resetDue[bucket] or now+interval) or interval>0 and status=="empty" and now>=(autoQuest.resetDue[bucket] or now+interval) then
+        elseif status=="empty" and interval==0 or interval>0 and (status=="working" or status=="unavailable") and now>=(autoQuest.resetDue[bucket] or now+interval) or interval>0 and status=="empty" and now>=(autoQuest.resetDue[bucket] or now+interval) then
             local since=api.emptyAt[bucket] or now;api.emptyAt[bucket]=since
             if interval==0 and now-since<3 then api.status=tr("Auto Reset: conferindo se todas as recompensas foram resgatadas.","Auto Reset: checking that all rewards were claimed.","Auto Reset: comprobando que se recogieron todas las recompensas.");continue end
             local product=bucket=="Daily" and "DailyQuestReset" or "WeeklyQuestReset"
@@ -12733,7 +12903,9 @@ function api.step(now)
             api.status=tr("Auto Reset: solicitando ","Auto Reset: requesting ","Auto Reset: solicitando ")..bucket.." ("..price.." Tickets).";return
         else
             api.emptyAt[bucket]=nil
-            api.status=status=="working" and tr("Auto Reset: aguardando terminar as diárias e semanais.","Auto Reset: waiting for daily and weekly quests to finish.","Auto Reset: esperando completar las misiones diarias y semanales.") or tr("Auto Reset: aguardando dados completos das missões.","Auto Reset: waiting for complete quest data.","Auto Reset: esperando datos completos de misiones.")
+            if status=="disabled" then blockedMessage=tr("Auto Reset: nenhuma missão selecionada em ","Auto Reset: no selected quests in ","Auto Reset: ninguna misión seleccionada en ")..bucket
+            elseif status=="unavailable" then blockedMessage=tr("Auto Reset: nenhuma missão selecionada apareceu no quadro atual de ","Auto Reset: no selected quest appeared in the current board for ","Auto Reset: ninguna misión seleccionada apareció en el cuadro actual de ")..bucket end
+            api.status=status=="working" and tr("Auto Reset: aguardando concluir as missões selecionadas.","Auto Reset: waiting for selected quests to finish.","Auto Reset: esperando completar las misiones seleccionadas.") or tr("Auto Reset: aguardando dados completos das missões.","Auto Reset: waiting for complete quest data.","Auto Reset: esperando datos completos de misiones.")
         end
     end
     if interval>0 and not blockedMessage then
@@ -14796,128 +14968,144 @@ state.hubParts.farm = function(H)
 			activity.Stat_Quests.Text = state.translate("Quests: ") .. "—"
 		end)
 end
--- One Auto Quest switch, with dedicated objective settings and a readable status card.
+-- Separate progression and Limit Breaker controls, saved draggable mission priorities.
 state.hubParts.questProfiles=function(H)
     local hub,panel=H.hub,H.farm.Progress
-    local api=state.questProfiles
+    local api,lb=state.questProfiles,state.limitBreaker
+    api.splitInit()
     local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.language=="ES" and es or en end
-    local function profileName(id)
-        if id=="progression" then return tr("Progressão","Progression","Progresión") end
-        if id=="limitbreaker" then return tr("Farm Limit Breaker","Limit Breaker Farm","Farm Limit Breaker") end
-        return tr("Personalizado","Custom","Personalizado")
-    end
+    local template=panel.Act_QuestObjectives
     local page=hub.pages.FarmHouses:Clone();page.Name="FarmQuests"
     for _,child in ipairs(page:GetChildren()) do child:Destroy() end
-    page.Visible=false;page.CanvasSize=UDim2.fromOffset(0,0);page.Parent=hub.pages
-    local function card(name,height)
-        local frame=make("Frame",{Name=name,Size=UDim2.new(1,-12,0,height),Position=UDim2.fromOffset(6,8),BackgroundColor3=colors.bg,BorderSizePixel=0},page)
-        make("UIStroke",{Color=colors.accent,Transparency=0.65,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border},frame)
-        return frame
+    page.Visible=false;page.Parent=hub.pages
+    local function frame(name,parent,y,height)
+        local f=make("Frame",{Name=name,Size=UDim2.new(1,-12,0,height),Position=UDim2.fromOffset(6,y),BackgroundColor3=colors.bg,BorderSizePixel=0},parent)
+        make("UIStroke",{Color=colors.accent,Transparency=0.6,Thickness=1},f);return f
     end
-    local objectives=card("Objectives",100)
-    local resetCard=card("ResetSettings",218)
-    local status=card("QuestStatus",184)
-    local template=panel.Act_QuestObjectives
-    local function action(name,parent,y)
+    local function button(name,parent,y,text)
         local b=template:Clone();b.Name=name
         for _,key in ipairs({"Action","MirrorText","QuestScopeLabel"}) do b:SetAttribute(key,nil) end
-        b.Position=UDim2.fromOffset(12,y);b.Size=UDim2.new(1,-24,0,34);b.Parent=parent
-        return b
+        b.Position=UDim2.fromOffset(12,y);b.Size=UDim2.new(1,-24,0,32);b.Parent=parent;b.Title.Text=text or "";return b
     end
-    local profileButton=action("Act_Profile",objectives,10)
-    local groupsButton=action("Act_ProfileGroups",objectives,54)
-    -- Relocate the TEST24 controls; retain their original handlers and native reset icon.
-    local reset=panel.Row_AutoResetQuests;reset.Parent=resetCard;reset.Position=UDim2.fromOffset(8,8)
-    local resetScope=panel.Act_QuestResetScope;resetScope.Parent=resetCard;resetScope.Position=UDim2.fromOffset(44,66)
-    local interval=panel.Row_QuestResetInterval;interval.Parent=resetCard;interval.Position=UDim2.fromOffset(8,104)
-    local refill=reset:Clone();refill.Name="Row_TicketRefill";refill.Position=UDim2.fromOffset(8,154);refill.Parent=resetCard
-    local resetBottom=template.Position.Y.Offset+template.Size.Y.Offset
-    for _,child in ipairs(panel:GetChildren()) do
-        if child:IsA("GuiObject") and child~=template and child.Position.Y.Offset>=resetBottom+142 then child.Position-=UDim2.fromOffset(0,142) end
+    local resetCard=frame("ResetSettings",page,8,218)
+    for name,y in pairs({Row_AutoResetQuests=8,Act_QuestResetScope=66,Row_QuestResetInterval=104}) do local c=panel[name];c.Parent=resetCard;c.Position=UDim2.fromOffset(name=="Act_QuestResetScope" and 44 or 8,y) end
+    local refill=resetCard.Row_AutoResetQuests:Clone();refill.Name="Row_TicketRefill";refill.Position=UDim2.fromOffset(8,154);refill.Parent=resetCard
+    local bottom=template.Position.Y.Offset+template.Size.Y.Offset
+    for _,child in ipairs(panel:GetChildren()) do if child:IsA("GuiObject") and child~=template and child.Position.Y.Offset>=bottom+142 then child.Position-=UDim2.fromOffset(0,56) end end
+    panel.Size-=UDim2.fromOffset(0,56)
+    local row=panel.Row_AutoQuest:Clone();row.Name="Row_LimitBreaker";row.Position=UDim2.fromOffset(8,bottom+5);row.Parent=panel
+    row.Toggle:SetAttribute("Bind",nil);row.Toggle:SetAttribute("Id",nil)
+    local open=button("Act_LimitBreaker",panel,bottom+48)
+    open.Position=UDim2.fromOffset(44,bottom+48);open.Size=UDim2.new(1,-60,0,30)
+    local missionCard=frame("MissionSettings",page,238,146)
+    local daily=button("Daily",missionCard,8);local weekly=button("Weekly",missionCard,50);local strategy=button("Strategy",missionCard,92)
+    local activity=frame("QuestStatus",page,396,122)
+    local status=make("TextLabel",{Name="Status",Size=UDim2.new(1,-24,1,-16),Position=UDim2.fromOffset(12,8),BackgroundTransparency=1,Text="",TextColor3=colors.text,Font=Enum.Font.GothamMedium,TextSize=12,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top},activity)
+    page.CanvasSize=UDim2.fromOffset(0,532)
+    local listPage=page:Clone();listPage.Name="LimitBreakerMissions"
+    for _,child in ipairs(listPage:GetChildren()) do child:Destroy() end
+    listPage.Visible=false;listPage.Parent=hub.pages
+    local tabs=frame("Tabs",listPage,8,96)
+    local dailyTab=button("Daily",tabs,6);local weeklyTab=button("Weekly",tabs,48)
+    local restore=button("RestoreDefault",listPage,112)
+    local list=frame("MissionList",listPage,156,100)
+    local bucket="Daily";local drag;local rows={};local rowConnections={};local render
+    local function addConnection(signal,fn) local c=signal:Connect(fn);table.insert(rowConnections,c) end
+    local function clearRows()
+        for _,c in ipairs(rowConnections) do c:Disconnect() end;table.clear(rowConnections)
+        for _,c in ipairs(list:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+        rows={}
     end
-    panel.Size-=UDim2.fromOffset(0,142)
-    local rows={}
-    make("TextLabel",{Name="Heading",Size=UDim2.new(1,-24,0,22),Position=UDim2.fromOffset(12,8),BackgroundTransparency=1,Text="AUTO QUEST",Font=Enum.Font.GothamBold,TextSize=13,TextColor3=colors.text,TextXAlignment=Enum.TextXAlignment.Left},status)
-    for index,name in ipairs({"Objective","Mission","Stage","Reset","OtherAutomation"}) do
-        rows[name]=make("TextLabel",{Name=name,Size=UDim2.new(1,-24,0,index==2 and 42 or 22),Position=UDim2.fromOffset(12,32+(index-1)*26+(index>2 and 16 or 0)),BackgroundTransparency=1,Text="",Font=Enum.Font.GothamMedium,TextSize=12,TextColor3=colors.text,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,TextWrapped=true,TextTruncate=Enum.TextTruncate.AtEnd},status)
+    local function selectedCount(definitions)
+        local n=0;for id in pairs(definitions or {}) do if lb.selected(autoQuest,bucket,id) then n+=1 end end;return n
     end
-    local function showProfileMenu()
-        local options={}
-        for _,id in ipairs({"progression","limitbreaker","custom"}) do options[#options+1]={id=id,name=profileName(id),selected=api.profile(autoQuest)==id} end
-        choose(tr("Objetivo do Auto Quest","Auto Quest objective","Objetivo de Auto Quest"),options,function(id) api.commit(id) end)
-    end
-    local function showGroups()
-        if api.profile(autoQuest)=="progression" then
-            local options={
-                {id="islands",name=tr("Somente ilhas","Islands only","Solo islas"),selected=api.progression(autoQuest)=="islands"},
-                {id="world",name=tr("Somente mundo","World only","Solo mundo"),selected=api.progression(autoQuest)=="world"},
-                {id="both",name=tr("Ambos","Both","Ambos"),selected=api.progression(autoQuest)=="both"}}
-            choose(profileName("progression"),options,function(id) api.commit("progression",id) end)
-        else
-            local g=api.groups(autoQuest)
-            local names={islands=tr("Missões das ilhas","Island quests","Misiones de islas"),world=tr("Missões de mundo","World quests","Misiones de mundo"),daily=tr("Diárias","Daily","Diarias"),weekly=tr("Semanais","Weekly","Semanales"),pass=tr("Passe","Pass","Pase")}
-            local options={{id="done",name=tr("Concluir seleção","Finish selection","Finalizar selección")}}
-            for _,key in ipairs({"islands","world","daily","weekly","pass"}) do options[#options+1]={id=key,name=names[key],selected=g[key]} end
-            choose(profileName("custom"),options,function(id)
-                if id=="done" then return end
-                g[id]=not g[id];api.commit("custom",g);showGroups()
+    render=function()
+        if drag then return end
+        clearRows()
+        local definitions=require(storage.Indexer.QuestsInfo)[bucket] or {}
+        local catalog=lb.catalog(bucket);local records=clientData.Get("Quests",bucket)
+        for index,entry in ipairs(catalog) do
+            local f=frame(entry.id,list,6+(index-1)*78,72);rows[index]=f
+            local name=make("TextLabel",{Name="Name",Size=UDim2.new(1,-150,0,26),Position=UDim2.fromOffset(46,5),Text=entry.name,TextColor3=colors.text,BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},f)
+            local record
+            for id,value in pairs(type(records)=="table" and records or {}) do if type(value)=="table" and (value.Name or id)==entry.id then record=value;break end end
+            local progress={}
+            for _,v in pairs(record and record.Progress or {}) do progress[#progress+1]=tostring(v.Current or 0).."/"..tostring(v.Max or "?") end
+            local note=record and (record.Completed and tr("Concluída","Completed","Completada") or table.concat(progress," · ")) or tr("Não está no quadro atual","Not in current board","No está en el cuadro actual")
+            make("TextLabel",{Name="Progress",Size=UDim2.new(1,-64,0,24),Position=UDim2.fromOffset(46,39),Text=note,TextColor3=record and colors.accent or colors.muted,BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},f)
+            local toggle=row.Toggle:Clone();toggle.Name="Enabled";toggle.Position=UDim2.new(1,-48,0,8);toggle.Parent=f;H.paint(toggle,lb.selected(autoQuest,bucket,entry.id))
+            connectUI(toggle,function()
+                lb.change(function(q)
+                    q.missionSelection=q.missionSelection or {};q.missionSelection[bucket]=q.missionSelection[bucket] or {}
+                    q.missionSelection[bucket][entry.id]=not lb.selected(q,bucket,entry.id)
+                    q.resetSelectedSeen=q.resetSelectedSeen or {};q.resetSelectedSeen[bucket]=nil
+                end);render()
+            end,nil,rowConnections)
+            local function small(name,text,x)
+                return make("TextButton",{Name=name,Size=UDim2.fromOffset(28,28),Position=UDim2.new(1,x,0,5),Text=text,TextColor3=colors.accent,BackgroundColor3=colors.bg,Font=Enum.Font.GothamBold,TextSize=17,AutoButtonColor=false},f)
+            end
+            local up,down=small("Up","↑",-116),small("Down","↓",-84)
+            connectUI(up,function() lb.move(bucket,entry.id,index-1);render() end,nil,rowConnections)
+            connectUI(down,function() lb.move(bucket,entry.id,index+1);render() end,nil,rowConnections)
+            local handle=make("TextButton",{Name="Drag",Size=UDim2.fromOffset(36,60),Position=UDim2.fromOffset(4,5),Text="☰",TextColor3=colors.accent,BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=20},f)
+            addConnection(handle.InputBegan,function(input)
+                if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
+                local anchor=f.AbsolutePosition.Y
+                if type(anchor)~="number" then return end
+                drag={id=entry.id,index=index,target=index,startY=input.Position.Y,step=78,bucket=bucket}
+                listPage.ScrollingEnabled=false;f.BackgroundColor3=colors.edge
             end)
         end
+        list.Size=UDim2.new(1,-12,0,#catalog*78+12)
+        listPage.CanvasSize=UDim2.fromOffset(0,170+list.Size.Y.Offset)
+        dailyTab.Title.Text=tr("Diárias","Daily","Diarias");weeklyTab.Title.Text=tr("Semanais","Weekly","Semanales")
+        restore.Title.Text=tr("Restaurar ordem padrão","Restore default order","Restaurar orden predeterminado")
     end
-    local function scopeName()
-        local value=autoQuest.resetScope or "both"
-        return value=="daily" and tr("Somente diárias","Daily only","Solo diarias") or value=="weekly" and tr("Somente semanais","Weekly only","Solo semanales") or tr("Ambos","Both","Ambos")
-    end
-    local function update()
-        local profile=api.profile(autoQuest)
-        template.Title.Text=tr("Objetivo: ","Objective: ","Objetivo: ")..profileName(profile).." >"
-        profileButton.Title.Text=profileName(profile).." >"
-        groupsButton.Visible=profile~="limitbreaker"
-        if profile=="progression" then
-            local choice=api.progression(autoQuest)
-            groupsButton.Title.Text=(choice=="islands" and tr("Somente ilhas","Islands only","Solo islas") or choice=="world" and tr("Somente mundo","World only","Solo mundo") or tr("Ilhas e mundo","Islands and world","Islas y mundo")).." >"
-        else groupsButton.Title.Text=tr("Escolher grupos de missões >","Choose quest groups >","Elegir grupos de misiones >") end
-        objectives.Size=UDim2.new(1,-12,0,groupsButton.Visible and 100 or 56)
-        resetCard.Visible=api.resetAllowed(autoQuest)
-        resetCard.Position=UDim2.fromOffset(6,objectives.Position.Y.Offset+objectives.Size.Y.Offset+12)
-        status.Position=UDim2.fromOffset(6,resetCard.Visible and resetCard.Position.Y.Offset+resetCard.Size.Y.Offset+12 or resetCard.Position.Y.Offset)
-        page.CanvasSize=UDim2.fromOffset(0,status.Position.Y.Offset+status.Size.Y.Offset+12)
-        refill.Title.Text=tr("Repor Tickets na Trial","Refill Tickets in Trial","Reponer Tickets en Trial")
-        refill.Caption.Text=tr("Até atingir a capacidade da conta.","Until reaching this account's capacity.","Hasta alcanzar la capacidad de la cuenta.")
-        H.paint(refill.Toggle,autoQuest.refillTickets~=false)
-        local job=autoQuest.journey
-        local active=autoQuest.enabled==true
-        rows.Objective.Text=tr("Objetivo: ","Objective: ","Objetivo: ")..profileName(profile)
-        rows.Mission.Text=tr("Missão atual: ","Current quest: ","Misión actual: ")..(api.problem or (not active and tr("Desligado","Off","Desactivado") or job and (job.name or job.id) or questStatus.Text or tr("Aguardando objetivo","Waiting for objective","Esperando objetivo")))
-        if active and job and job.bucket then
-            if job.bucket=="TicketFarm" then
-                local current,maximum=state.questTicketStock()
-                if current and maximum then rows.Mission.Text=tr("Tickets: ","Tickets: ","Tickets: ")..current.."/"..maximum end
-            else
-                local records=clientData.Get("Quests",job.bucket)
-                local record=type(records)=="table" and records[job.id]
-                local progress=type(record)=="table" and type(record.Progress)=="table" and record.Progress[job.goal]
-                if type(progress)=="table" then rows.Mission.Text=tr("Missão atual: ","Current quest: ","Misión actual: ")..(job.name or job.id).." · "..tostring(progress.Current or 0).."/"..tostring(progress.Max or "?") end
-            end
-        end
-        local stage=state.recurringQuests and state.recurringQuests.stage
-        local stages={tr("Ilhas","Islands","Islas"),tr("Dungeons","Dungeons","Dungeons"),tr("Raids","Raids","Raids"),tr("Castelos e outros modos","Castles and other modes","Castillos y otros modos")}
-        rows.Stage.Text=tr("Etapa: ","Stage: ","Etapa: ")..(job and job.bucket=="TicketFarm" and tr("Trial · reposição de Tickets","Trial · Ticket refill","Trial · reposición de Tickets") or stages[stage] or profileName(profile))
-        local resetText=autoQuest.resetQuests and resetCard.Visible and scopeName().." · "..((autoQuest.resetInterval or 0)==0 and tr("ao concluir","on completion","al completar") or tostring(autoQuest.resetInterval).."s") or tr("Desligado","Off","Desactivado")
-        if autoQuest.resetQuests and resetCard.Visible and not state.questReset.includes("Daily") and not state.questReset.includes("Weekly") then resetText=tr("Escolha um grupo de reset compatível.","Select a matching reset group.","Elige un grupo de reinicio compatible.") end
-        rows.Reset.Text=tr("Reset: ","Reset: ","Reinicio: ")..resetText
-        rows.OtherAutomation.Text=tr("Demais automações: ","Other automations: ","Otras automatizaciones: ")..(active and tr("pausadas","paused","pausadas") or tr("liberadas","available","disponibles"))
-    end
-    api.refresh=update
-    api.menu=function() state.newHubShow("FarmQuests",true);update() end
-    connectUI(profileButton,showProfileMenu)
-    connectUI(groupsButton,showGroups)
-    connectUI(refill.Toggle,function()
-        local old=autoQuest.refillTickets;autoQuest.refillTickets=old==false
-        if not save() then autoQuest.refillTickets=old;api.problem=tr("Falha ao salvar a reposição de Tickets.","Could not save Ticket refill.","Error al guardar reposición de Tickets.") end
-        update()
+    table.insert(connections,Input.InputChanged:Connect(function(input)
+        if not drag then return end
+        if input.UserInputType~=Enum.UserInputType.MouseMovement and input.UserInputType~=Enum.UserInputType.Touch then return end
+        local scale=hub.main:FindFirstChildOfClass("UIScale");local zoom=scale and scale.Scale or 1
+        drag.target=math.clamp(drag.index+math.floor((input.Position.Y-drag.startY)/(78*zoom)+0.5),1,#rows)
+        for index,f in ipairs(rows) do f.BackgroundColor3=index==drag.target and colors.edge or colors.bg end
+    end))
+    table.insert(connections,Input.InputEnded:Connect(function(input)
+        if not drag or input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
+        local finished=drag;drag=nil;listPage.ScrollingEnabled=true;lb.move(finished.bucket,finished.id,finished.target);render()
+    end))
+    local function showMissions(which) bucket=which;render();state.newHubShow("LimitBreakerMissions",true) end
+    connectUI(daily,function() showMissions("Daily") end);connectUI(weekly,function() showMissions("Weekly") end)
+    connectUI(dailyTab,function() bucket="Daily";render() end);connectUI(weeklyTab,function() bucket="Weekly";render() end)
+    connectUI(restore,function() lb.change(function(q) q.missionOrder=q.missionOrder or {};q.missionOrder[bucket]=nil;local order={};for _,entry in ipairs(lb.catalog(bucket)) do order[#order+1]=entry.id end;q.missionOrder[bucket]=order end);render() end)
+    connectUI(strategy,function()
+        choose(tr("Prioridade entre grupos","Priority between groups","Prioridad entre grupos"),{
+            {id="daily",name=tr("Diárias primeiro","Daily first","Diarias primero")},
+            {id="weekly",name=tr("Semanais primeiro","Weekly first","Semanales primero")},
+            {id="interleave",name=tr("Intercalar prioridades","Interleave priorities","Intercalar prioridades")}},function(id) lb.change(function(q) q.missionStrategy=id end) end)
     end)
-    table.insert(H.periodic,update);update()
+    connectUI(row.Toggle,function() lb.change(function(q) q.limitBreakerEnabled=not q.limitBreakerEnabled end) end)
+    connectUI(open,function() state.newHubShow("FarmQuests",true) end)
+    connectUI(refill.Toggle,function() lb.change(function(q) q.refillTickets=q.refillTickets==false end) end)
+    local function progression()
+        choose(tr("Progressão","Progression","Progresión"),{
+            {id="islands",name=tr("Somente ilhas","Islands only","Solo islas"),selected=api.progression(autoQuest)=="islands"},
+            {id="world",name=tr("Somente mundo","World only","Solo mundo"),selected=api.progression(autoQuest)=="world"},
+            {id="both",name=tr("Ambos","Both","Ambos"),selected=api.progression(autoQuest)=="both"}},function(id) lb.change(function(q) q.progression=id end) end)
+    end
+    api.menu=progression
+    local function update()
+        template.Title.Text=tr("Progressão >","Progression >","Progresión >")
+        H.paint(panel.Row_AutoQuest.Toggle,autoQuest.progressionEnabled==true)
+        row.Title.Text="Limit Breaker";row.Caption.Text=tr("Missões, mobs e resets integrados.","Integrated quests, mobs and resets.","Misiones, mobs y reinicios integrados.")
+        H.paint(row.Toggle,autoQuest.limitBreakerEnabled==true)
+        open.Title.Text=tr("Missões e prioridades >","Quests and priorities >","Misiones y prioridades >")
+        daily.Title.Text=tr("Organizar diárias >","Organize daily >","Organizar diarias >");weekly.Title.Text=tr("Organizar semanais >","Organize weekly >","Organizar semanales >")
+        strategy.Title.Text=(autoQuest.missionStrategy=="daily" and tr("Diárias primeiro","Daily first","Diarias primero") or autoQuest.missionStrategy=="weekly" and tr("Semanais primeiro","Weekly first","Semanales primero") or tr("Intercalar prioridades","Interleave priorities","Intercalar prioridades")).." >"
+        refill.Title.Text=tr("Auto Trial · repor Tickets","Auto Trial · refill Tickets","Auto Trial · reponer Tickets")
+        refill.Caption.Text=tr("Sem saldo para resets: Trial até encher.","Cannot afford resets: Trial until full.","Sin saldo para reinicios: Trial hasta llenar.")
+        H.paint(refill.Toggle,autoQuest.refillTickets~=false)
+        status.Text="Limit Breaker: "..(autoQuest.limitBreakerEnabled and "ON" or "OFF").."\n"..(api.problem or questStatus.Text or "").."\n"..state.questReset.status
+    end
+    api.refresh=update;table.insert(H.periodic,update);update()
 end
 -- Farm: grouped raid controls and independently collapsible category headers.
 -- Recebe do nucleo (new-hub-view.lua): hub, link, bindText.
@@ -17847,7 +18035,8 @@ function state.installNewHub()
 		Farm = {"⚔️", "FARM", "Combate, progressão e eventos.", "Farm"},
 		FarmAttributes = {"⚙", "ATRIBUTOS", "Metas e distribuição", "Farm"},
 		FarmHouses = {"🏠", "CASAS", "Escolha de coleta", "Farm"},
-        FarmQuests = {"📜", "AUTO QUESTS", "Objetivos e prioridades", "Farm"},
+        FarmQuests = {"📜", "LIMIT BREAKER", "Missões e prioridades", "Farm"},
+        LimitBreakerMissions = {"📜", "MISSÕES", "Arraste para ordenar", "Farm"},
 		FarmGuild = {"🏰", "GUILDA", "Seleção de chefe", "Farm"},
 		DungeonMain = {"🛡️", "DUNGEON", "›   Principal", "DungeonMain"},
 		DungeonModes = {"🛡️", "DUNGEON", "›   Selecionar Modo", "DungeonMain"},
@@ -17888,7 +18077,7 @@ function state.installNewHub()
 		if info then
 			left.Icon.Text, left.Title.Text, left.Sub.Text = info[1], info[2], info[3]
 			setActiveTab(info[4])
-			local sub = name == "FarmAttributes" or name == "FarmHouses" or name == "FarmGuild" or name == "FarmQuests"
+			local sub = name == "FarmAttributes" or name == "FarmHouses" or name == "FarmGuild" or name == "FarmQuests" or name == "LimitBreakerMissions"
 			left.Title.Size = UDim2.fromOffset(sub and 110 or 65, 28)
 		end
 		hub.pageHeader.Back.Visible = #stack > 0
@@ -19950,7 +20139,7 @@ connect(RunService.Heartbeat, function()
         end
         return
     end
-    if autoQuest.enabled and (not state.houses.enabled or state.houses.route.waitUntil ~= nil) and not events.active and not insideDungeon() then
+    if autoQuest.enabled and (state.questPriorityActive and state.questPriorityActive() or not state.houses.enabled or state.houses.route.waitUntil ~= nil) and not events.active and not insideDungeon() then
         local root = rootPart()
         if questRuntime.destination and root and not player:GetAttribute("Mounted") and not player:GetAttribute("Swimming") then
             root.AssemblyLinearVelocity = Vector3.zero
@@ -20201,7 +20390,7 @@ task.spawn(function()
             status.Text = "Ataque em espera; nova tentativa em " .. math.ceil(state.attackRetryAt - os.clock()) .. " s."
             return
         end
-        local quest = autoQuest.enabled and (not state.houses.enabled or state.houses.route.waitUntil ~= nil) and not events.active and not insideDungeon() and questRuntime.filter or nil
+        local quest = autoQuest.enabled and (state.questPriorityActive and state.questPriorityActive() or not state.houses.enabled or state.houses.route.waitUntil ~= nil) and not events.active and not insideDungeon() and questRuntime.filter or nil
         if insideDungeon() or quest then state.map = nil end
         if quest and state.target and not questEnemyMatches(quest, state.target:GetAttribute("Id"), state.target:GetAttribute("MapId"), quest.info[state.target:GetAttribute("Id")]) then state.target = nil end
         do
