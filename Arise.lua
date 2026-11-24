@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-LB-STORM-INFUSION-QUEUE-2.0-TEST57-20261124"
+state.build = "VYKRON-STORM-WAIT-NOTICE-2.0-TEST59-20261124"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -4781,6 +4781,7 @@ do
     questToggle.Name = "AutoQuest"
     local stormToggle = state.controlRow("Auto Storm", "Visita a ilha anunciada e retorna ao farm ao terminar.", farmPage)
     stormToggle.Name = "AutoStorm"
+    state.stormControl=stormToggle
     toggleLook(stormToggle, storm.enabled)
     connectUI(stormToggle, function()
         storm.enabled = not storm.enabled
@@ -8836,6 +8837,13 @@ end
                     end
                 end
                 worldBossToggle.Caption.Text = not (worldBoss.enabled and (not state.questPriorityAllows or state.questPriorityAllows("boss")) or state.questWantsEvent and state.questWantsEvent("boss")) and "Desligado." or "Independente do Auto Farm; aguarda nascer para viajar."
+                if state.stormControl then
+                    local waiting=uiState.language=="PT" and "Aguardando a próxima Storm."
+                        or uiState.language=="ES" and "Esperando la próxima Storm." or "Waiting for the next Storm."
+                    local active=uiState.language=="PT" and "Storm ativa: "
+                        or uiState.language=="ES" and "Storm activa: " or "Storm active: "
+                    state.stormControl.Caption.Text=not storm.enabled and "Desligado." or activeMap and (active..tostring(mapInfo[activeMap].Name)) or waiting
+                end
                 if state.questPriorityActive and state.questPriorityActive() and events.active and not state.questWantsEvent(events.active) then finish();return end
                 if events.active == "guild" or events.active == "kamish" then return end
                 local priority = state.collectionPriority()
@@ -10818,15 +10826,20 @@ function state.questPriorityActive()
     return (state.questProfiles and autoQuest.enabled==true or policy.enabled(autoQuest)) and not state.panic and not state.stopped
 end
 function state.questPriorityAllows(kind)
+    if kind=="storm" and state.limitBreakerStormEnabled and state.limitBreakerStormEnabled() then return true end
     return not state.questPriorityActive() or state.questWantsEvent(kind)
 end
-function state.limitBreakerStormRequested()
+function state.limitBreakerStormEnabled()
     local limit=autoQuest.profile=="limitbreaker"
     if autoQuest.splitQuests then limit=autoQuest.limitBreakerEnabled==true end
     if not limit or not policy.enabled(autoQuest) or not storm or storm.enabled~=true or state.panic or state.stopped then return false end
+    return true
+end
+function state.limitBreakerStormRequested()
+    if not state.limitBreakerStormEnabled() then return false end
     local map=events.currentStormMap
     local info=map and mapInfo[map]
-    return info~=nil and tonumber(info.World)==tonumber(storage:GetAttribute("World"))
+    return type(info)=="table" and tonumber(info.World)==tonumber(storage:GetAttribute("World"))
 end
 function state.questTicketStock()
     local inventory=clientData.Get("Inventory","Items")
