@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-STORM-WAIT-NOTICE-2.0-TEST59-20261124"
+state.build = "VYKRON-INFUSION-ONE-UNIQUE-2.0-TEST60-20261124"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -923,13 +923,43 @@ function state.infusionTargetsMet(entry,prefs)
     end
     return any
 end
+function state.infusionUniqueProblem(prefs,catalog)
+    local chosen
+    for _,key in ipairs(state.infusionKeys) do
+        if catalog[key] and catalog[key].Unique and (tonumber(prefs.targets[key]) or 0)>0 then
+            if chosen then return "Escolha somente um bônus UNIQUE por sombra." end
+            chosen=key
+        end
+    end
+end
+function state.infusionSetTarget(prefs,key,level,catalog)
+    local info=catalog[key]
+    if not info or not info.Level then return false end
+    level=math.clamp(math.floor(tonumber(level) or 0),0,tonumber(info.Level.Max) or 0)
+    if info.Unique and level>0 then
+        for _,other in ipairs(state.infusionKeys) do
+            if other~=key and catalog[other] and catalog[other].Unique then
+                prefs.targets[other]=0
+                if prefs.locks then prefs.locks[other]=nil end
+                for uid in pairs(prefs.selected or {}) do
+                    if prefs.locksByUid and prefs.locksByUid[uid] then prefs.locksByUid[uid][other]=nil end
+                end
+            end
+        end
+    end
+    prefs.targets[key]=level
+    return true
+end
 function state.infusionPlan(entry,prefs,catalog,balance)
+    local uniqueProblem=state.infusionUniqueProblem(prefs,catalog)
+    if uniqueProblem then return nil,uniqueProblem end
     if not entry then return nil,"Escolha uma sombra para infundir." end
     if entry.pet.InExp then return nil,"Esta sombra está em expedição." end
     local levels=entry.pet.Enchants or {}
     local manual=prefs.locksByUid and prefs.locksByUid[entry.uid] or (not prefs.uid or prefs.uid==entry.uid) and prefs.locks or {}
     local locks,targets={},{}
     local total,reached,locked=0,0,0
+    local unique
     for _,key in ipairs(state.infusionKeys) do
         local info=catalog[key]
         if not info or not info.Level then return nil,"Dados de infusão indisponíveis." end
@@ -942,6 +972,10 @@ function state.infusionPlan(entry,prefs,catalog,balance)
             if current<1 then return nil,state.infusionText("O bônus %s ainda não existe para travar.",info.Name or key) end
             if goal>current then return nil,state.infusionText("Destrave %s para alcançar a meta maior.",info.Name or key) end
             locks[key]=true
+        end
+        if info.Unique and (goal>0 or locks[key]) then
+            if unique then return nil,"Escolha somente um bônus UNIQUE por sombra." end
+            unique=key
         end
     end
     if total==0 then return nil,"Ative pelo menos uma meta de infusão." end
@@ -4001,6 +4035,8 @@ for key,value in pairs(captions) do if state.languageCatalog[key]==nil then stat
 end
 do
 local messages={
+ ["Escolha somente um bônus UNIQUE por sombra."]={EN="Choose only one UNIQUE bonus per shadow.",ES="Elige solo un bono UNIQUE por sombra."},
+ ["Somente 1 UNIQUE por sombra. Ao selecionar outro, o anterior é desativado."]={EN="Only 1 UNIQUE per shadow. Selecting another disables the previous one.",ES="Solo 1 UNIQUE por sombra. Al elegir otro, se desactiva el anterior."},
  ["Aguardando inventário para retomar o Craft salvo."]={EN="Waiting for inventory before resuming saved Craft mode.",ES="Esperando el inventario para reanudar el modo Craft guardado."},
  ["Falha ao salvar o modo Craft; operação pausada."]={EN="Could not save Craft mode; operation paused.",ES="Error al guardar el modo Craft; operación pausada."},
  ["Finalizando operação anterior antes de trocar o modo."]={EN="Finishing the previous operation before switching modes.",ES="Finalizando la operación anterior antes de cambiar de modo."},
@@ -13421,7 +13457,7 @@ function state.infusionStep(now)
     if not entries then run.status=problem or "Dados de infusão indisponíveis.";return end
     local receipt=prefs.pending
     if receipt then
-        if run.running or state.craftControl and state.craftControl.requested or now-receipt.at>=30 then run.recoverRequested=true end
+        if now-receipt.at>=30 then run.recoverRequested=true end
         local entry
         for _,e in ipairs(entries) do if e.uid==receipt.uid then entry=e;break end end
         local ok,evidence=state.infusionReconcile(receipt,entry,deps,now)
@@ -14036,7 +14072,7 @@ function state.installInfusionUI(H)
         if refresh then refresh(true) end
     end
     local toggle=switchAction(automation,"AutoInfusion",44,startStop);toggle.Position=UDim2.new(1,-32,0,44)
-    local goals=panel("InfusionTargets",820,6)
+    local goals=panel("InfusionTargets",870,6)
     local goalsTitle=labelAt(goals,"Heading",8,27,true);goalsTitle.TextSize=14
     local maxButton=action(goals,"AutoMax",42,function()
         local deps=data();if not deps then return end
@@ -14061,12 +14097,12 @@ function state.installInfusionUI(H)
             local deps=data();local info=deps and deps.infusion.catalog[key];if not info then return end
             local p=state.infusionPrefs();local options={{id=0,name=tr("Ignorar","Ignore","Ignorar"),selected=p.targets[key]==0}}
             for level=1,info.Level.Max do options[#options+1]={id=level,name=tostring(level).." / "..info.Level.Max,selected=p.targets[key]==level} end
-            chooseOption(state.infusionText(key),options,function(level) mutate(function(p) p.targets[key]=level end) end)
+            chooseOption(state.infusionText(key),options,function(level) mutate(function(p) state.infusionSetTarget(p,key,level,deps.infusion.catalog) end) end)
         end)
         target.Position=UDim2.fromOffset(10,50);target.Size=UDim2.new(0.5,-16,0,30)
         local enabled=switchAction(tile,"Enabled",61,function()
             local deps=data();local info=deps and deps.infusion.catalog[key];if not info then return end
-            mutate(function(p) p.targets[key]=(p.targets[key] or 0)>0 and 0 or info.Level.Max end)
+            mutate(function(p) state.infusionSetTarget(p,key,(p.targets[key] or 0)>0 and 0 or info.Level.Max,deps.infusion.catalog) end)
             if refresh then refresh(true) end
         end)
         enabled.Position=UDim2.new(0.61,0,0,61)
@@ -14079,7 +14115,7 @@ function state.installInfusionUI(H)
         local lockTitle=labelAt(tile,"LockTitle",45,14,false);lockTitle.Position=UDim2.new(0.86,-32,0,45);lockTitle.Size=UDim2.fromOffset(64,14);lockTitle.TextSize=10;lockTitle.TextXAlignment=Enum.TextXAlignment.Center
         rows[key]={icon=icon,name=n,current=current,target=target,enabled=enabled,lock=lock,enabledTitle=enabledTitle,lockTitle=lockTitle}
     end
-    local hint=labelAt(goals,"Hint",766,44,false);hint.TextSize=11
+    local hint=labelAt(goals,"Hint",766,94,false);hint.TextSize=14
     local payment=panel("InfusionPayment",156,7)
     local payTitle=labelAt(payment,"Heading",6,26,true)
     local gemsButton=action(payment,"Gems",40,function() mutate(function(p) p.payment="Gems" end);if refresh then refresh(true) end end)
@@ -14189,7 +14225,7 @@ function state.installInfusionUI(H)
             paintSwitch(row.enabled,target>0,canEdit)
             paintSwitch(row.lock,locked,row.lock.Active)
         end
-        text(hint,tr("Meta = nível desejado. Ativo = buscar bônus. Travar = preservar o atual. Auto Max ajusta as metas ativadas.","Target = desired level. Enabled = roll this bonus. Lock = preserve its current level. Auto Max adjusts enabled targets.","Meta = nivel deseado. Activo = buscar bono. Bloquear = conservar el actual. Auto Max ajusta las metas activas."))
+        text(hint,state.infusionText("Somente 1 UNIQUE por sombra. Ao selecionar outro, o anterior é desativado.").."\n"..tr("Meta = nível desejado. Ativo = buscar bônus. Travar = preservar o atual. Auto Max ajusta as metas ativadas.","Target = desired level. Enabled = roll this bonus. Lock = preserve its current level. Auto Max adjusts enabled targets.","Meta = nivel deseado. Activo = buscar bono. Bloquear = conservar el actual. Auto Max ajusta las metas activas."))
         text(payTitle,tr("PAGAMENTO E CUSTO POR TENTATIVA","PAYMENT AND COST PER ATTEMPT","PAGO Y COSTO POR INTENTO"))
         text(gemsButton,"Gems + "..tr("materiais","materials","materiales"));text(ticketButton,"Tickets")
         for _,b in ipairs({gemsButton,ticketButton}) do
@@ -14204,7 +14240,8 @@ function state.installInfusionUI(H)
             price=table.concat(lines,"\n")
         end
         text(costs,price);text(statusTitle,tr("ATIVIDADE","ACTIVITY","ACTIVIDAD"))
-        local message=problem or run and run.status or queueReason or "Infusão preparada."
+        local uniqueProblem=deps and state.infusionUniqueProblem(p,deps.infusion.catalog)
+        local message=problem or uniqueProblem or run and run.status or queueReason or "Infusão preparada."
         text(status,state.infusionText(message))
         local total,reached=0,0
         for _,key in ipairs(state.infusionKeys) do local goal=p.targets[key] or 0;if goal>0 then total+=1;if entry and ((entry.pet.Enchants or {})[key] or 0)>=goal then reached+=1 end end end
