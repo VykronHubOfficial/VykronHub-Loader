@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-QUEST-RESET-MODE-UTILITIES-2.0-TEST29-20261123"
+state.build = "VYKRON-CRAFT-QUEST-CONCURRENCY-2.0-TEST54-20261124"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -453,8 +453,8 @@ local function chooseTrialCard(choices, buffs, curses)
     return selected
 end
 -- END TRIAL CARDS POLICY
-local uiState = {tab = "Dungeon", language = "EN", userScale = 1, width = 500, height = 820, reconnect = false, antiAFK = false, x = 0.5, y = 0.5, ox = 0, oy = 0, minimizeKey = "RightControl", hideTotal = false, uiSounds = false, showFps = false, compact = false, layout = "NewHub"}
-local autoSell = {enabled = false, ranks = {}, weapons = {enabled = false, ranks = {}, stacks = true}}
+local uiState = {tab = "Dungeon", language = "EN", userScale = 1, width = 500, height = 820, reconnect = false, antiAFK = false, maskName = false, x = 0.5, y = 0.5, ox = 0, oy = 0, minimizeKey = "RightControl", hideTotal = false, uiSounds = false, showFps = false, compact = false, layout = "NewHub"}
+local autoSell = {enabled = false, bulk = false, ranks = {}, weapons = {enabled = false, ranks = {}, stacks = true}}
 -- Stable rank values in profiles; independent of JSON object/array key handling.
 do
     function state.sellRankSelection(value)
@@ -487,6 +487,7 @@ do
                 ranks = ranks, selectedRankIds = ids}
         end
         local result = section(config)
+        result.bulk = config.bulk == true
         result.weapons = section(config.weapons)
         return result
     end
@@ -504,6 +505,7 @@ do
             return true
         end
         return sameSection(expected, actual, false)
+            and (expected.bulk == true) == (actual.bulk == true)
             and sameSection(expected.weapons, actual.weapons, true)
     end
 end
@@ -1362,6 +1364,8 @@ function api.owns(q,job)
 end
 function api.restore(q,saved)
     state.limitBreaker.restore(q,saved)
+    q.fixedIslandEnabled=saved.fixedIslandEnabled==true
+    if type(saved.fixedIsland)=="string" and #saved.fixedIsland>0 and #saved.fixedIsland<=150 then q.fixedIsland=saved.fixedIsland end
     if saved.profile=="progression" or saved.profile=="limitbreaker" or saved.profile=="custom" then q.profile=saved.profile end
     if saved.progression=="islands" or saved.progression=="world" or saved.progression=="both" then q.progression=saved.progression end
     if type(saved.questGroups)=="table" then
@@ -1419,12 +1423,17 @@ function state.sellableShadow(id,shadow,equipped,selected)
         and not equipped[id] and not shadow.Locked and not shadow.InExp
         and not (state.craftReserved and state.craftReserved(id))
 end
-local function sellableShadows(inventory, equipped, selected)
-    local ids = {}
+local function sellableShadows(inventory, equipped, selected, bulk)
+    -- Native NewUI.Common.FireList measures each UID as #tostring(id) + 4.
+    -- Keep one native-sized chunk in flight so Stop and protection changes are immediate.
+    local ids, bytes = {}, 0
     for id, shadow in pairs(inventory) do
         if state.sellableShadow(id,shadow,equipped,selected) then
+            local cost = #tostring(id) + 4
+            if #ids > 0 and bytes + cost > 6000 then break end
             table.insert(ids, id)
-            if #ids == 30 then break end
+            bytes += cost
+            if not bulk and #ids == 30 then break end
         end
     end
     return ids
@@ -1746,6 +1755,7 @@ local function farmEnabled()
     if state.panic then return false end
     if state.autoLeaving then return false end
     if state.questPriorityActive and state.questPriorityActive() then
+        if state.limitBreakerPortalOwnsRun and state.limitBreakerPortalOwnsRun() then return true end
         if insideDungeon() then return autoQuest.journey~=nil and autoQuest.journey.enterRequested==true and (not autoQuest.journey.bucket or state.recurringRunMatches(autoQuest.journey)) end
         if events.active then return state.questWantsEvent(events.active) end
         return questRuntime.combat==true
@@ -1770,7 +1780,7 @@ end
 local profilePath = "VykronHub/" .. player.UserId .. ".json"
 -- Pure configuration, large HP ordering and pause-aware loadout cycle.
 do
-state.teamSwitchKeys={One="1",Two="2",Three="3",Four="4",Five="5",Six="6"}
+state.teamSwitchKeys={One="1",Two="2",Three="3",Four="4",Five="5",Six="6",Seven="7",Eight="8",Nine="9",Zero="0"}
 function state.restoreDungeonUtilities(value)
     local u=dungeon.utilities
     if type(value)~="table" then return end
@@ -1918,6 +1928,7 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
         end
     end
     if type(saved.castleAFKOriginal) == "table" and type(saved.castleAFKOriginal.AfkCastle) == "boolean" and type(saved.castleAFKOriginal.AfksSettings) == "boolean" then state.castleAFK.original = saved.castleAFKOriginal end
+    if type(saved.keyAFKOriginal)=="table" and type(saved.keyAFKOriginal.AfkKey)=="boolean" and type(saved.keyAFKOriginal.AfksSettings)=="boolean" then state.keyAFKOriginal=saved.keyAFKOriginal end
     storm.enabled = saved.stormEnabled == true
     if state.validGiantsMode(saved.giantsMode) then state.giantsMode=saved.giantsMode end
     state.raidTravel=state.restoreRaidTravel(saved.raidTravel,workspace:GetServerTimeNow())
@@ -1998,7 +2009,9 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
             end
         end
         if saved.autoQuest.resetQuests==true then autoQuest.resetQuests=true end
+        autoQuest.ticketRefillPartial=saved.autoQuest.ticketRefillPartial==true
         if saved.autoQuest.resetScope=="daily" or saved.autoQuest.resetScope=="weekly" or saved.autoQuest.resetScope=="both" then autoQuest.resetScope=saved.autoQuest.resetScope end
+        if saved.autoQuest.resetLastBucket=="Daily" or saved.autoQuest.resetLastBucket=="Weekly" then autoQuest.resetLastBucket=saved.autoQuest.resetLastBucket end
         local interval=tonumber(saved.autoQuest.resetInterval)
         if interval and interval==interval and interval>=0 and interval<=86400 then autoQuest.resetInterval=math.floor(interval) end
         local due=saved.autoQuest.resetDue
@@ -2009,7 +2022,7 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
             and (reset.phase=="buy" or reset.phase=="use") and type(reset.at)=="number" and reset.at==reset.at and reset.at<math.huge
             and type(reset.itemBefore)=="number" and reset.itemBefore>=0 and reset.itemBefore<math.huge then
             autoQuest.resetPending={bucket=reset.bucket,product=reset.product,phase=reset.phase,at=reset.at,itemBefore=reset.itemBefore,price=reset.price,costs={Ticket=true},forced=reset.forced==true,
-                beforeSignature=type(reset.beforeSignature)=="string" and reset.beforeSignature or nil,beforeTotal=tonumber(reset.beforeTotal),useBefore=tonumber(reset.useBefore)}
+                beforeSignature=type(reset.beforeSignature)=="string" and reset.beforeSignature or nil,beforeTotal=tonumber(reset.beforeTotal),useBefore=tonumber(reset.useBefore),ticketBefore=tonumber(reset.ticketBefore),observeAt=tonumber(reset.observeAt),attempts=tonumber(reset.attempts)}
         end
         autoQuest.scope = saved.autoQuest.scope == "all" and "all" or saved.autoQuest.scope == "recurring" and "recurring" or "islands"
         if state.questProfiles then
@@ -2073,6 +2086,7 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
             autoSell.weapons.ranks = state.sellRankSelection(w)
         end
         autoSell.enabled = saved.autoSell.enabled == true
+        autoSell.bulk = saved.autoSell.bulk == true
         autoSell.ranks = state.sellRankSelection(saved.autoSell)
     end
     if type(saved.rebirth) == "table" then
@@ -2121,6 +2135,7 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
             end
         end
         uiState.reconnect, uiState.antiAFK = saved.ui.reconnect == true, saved.ui.antiAFK == true
+        uiState.maskName = saved.ui.maskName == true
         local miniSize = tonumber(saved.ui.miniSize)
         if miniSize and miniSize == miniSize and miniSize >= 0 and miniSize <= 60 then
             uiState.miniSize = miniSize == 0 and 0 or math.clamp(math.floor(miniSize), 25, 60)
@@ -2185,7 +2200,7 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
                     if type(id) == "string" then dungeon.runes.restoreLast[tostring(slot)] = id end
                 end
             end
-            dungeon.runes.enabled, dungeon.runes.reuseLast = value.runes.enabled == true, value.runes.reuseLast == true
+            dungeon.runes.enabled, dungeon.runes.reuseLast = value.runes.enabled == true, false
             dungeon.runes.replayPending, dungeon.runes.lastKnown = value.runes.replayPending == true, value.runes.lastKnown == true
             for _, group in ipairs({"slots", "last"}) do
                 for key, item in pairs(type(value.runes[group]) == "table" and value.runes[group] or {}) do
@@ -2238,7 +2253,7 @@ local function save()
     return pcall(function()
         if type(makefolder) == "function" then pcall(makefolder, "VykronHub") end
         writefile(profilePath, Http:JSONEncode({userId = player.UserId, panic = state.panic, eclipseDodge = state.eclipseDodge, gearTomes = state.gearTomes, enabled = state.enabled, misc = misc, dungeon = dungeon,
-            autoExecute = autoExecute, ui = uiState, pumpkinEnabled = pumpkin.enabled, pumpkinKingEnabled = state.pumpkinKing.enabled, trialCards = trialCards, trialSelected = state.trialSelected, speedRulesVersion = 1, rebirth = rebirth, autoSell = state.sellProfile(autoSell), autoQuest = autoQuest,
+            autoExecute = autoExecute, ui = uiState, pumpkinEnabled = pumpkin.enabled, pumpkinKingEnabled = state.pumpkinKing.enabled, trialCards = trialCards, trialSelected = state.trialSelected, speedRulesVersion = 1, rebirth = rebirth, autoSell = state.sellProfile(autoSell), autoQuest = autoQuest,keyAFKOriginal=state.keyAFKOriginal,
             worldBossEnabled = worldBoss.enabled, kamishEnabled = state.kamish.enabled, kamishSuspendUntil = state.kamish.suspendUntil, kamishHandledSpawn = state.kamish.handledSpawn, kamishLastOutcome = state.kamish.lastOutcome, castleAFKOriginal = state.castleAFK.original, stormEnabled = storm.enabled, openRaids = state.openRaidProfile(), giantsMode = state.giantsMode~="auto" and state.giantsMode or nil, raidTravel = state.raidTravel, raidClosures = state.raidClosures, guild = state.guild, autoClaim = autoClaim, codeClaims = state.codeClaims, autoBuy = autoBuy, craft = state.craft,
             houses = {enabled = state.houses.enabled, choice = state.houses.choice, visited = state.houses.visited, cooldownSources = state.houses.cooldownSources, route = state.houses.route}}))
     end)
@@ -4125,18 +4140,182 @@ local labels={
 }
 for key,row in pairs(labels) do state.languageCatalog[key]=row end
 end
+-- Complete UI captions. Exact-only labels never rewrite shadow, team or item names.
+do
+local rows={
+    {"Auto Kamish","Kamish automático","Kamish automático"},
+    {"Auto Treat","Doces automáticos","Dulces automáticos"},
+    {"Auto Treat  ›","Doces automáticos  ›","Dulces automáticos  ›"},
+    {"Auto Trick","Travessuras automáticas","Travesuras automáticas"},
+    {"Guild Boss","Chefe da guilda","Jefe del gremio"},
+    {"Storm","Tempestade","Tormenta"},
+    {"Rebirths: 0","Renascimentos: 0","Renacimientos: 0"},
+    {"Pumpkins: 0","Abóboras: 0","Calabazas: 0"},
+    {"Auto Farm Mobs","Farm automático de mobs","Farm automático de enemigos"},
+    {"Auto Dodge","Esquiva automática","Esquiva automática"},
+    {"Auto Quest","Missões automáticas","Misiones automáticas"},
+    {"Auto World Boss","Chefe mundial automático","Jefe mundial automático"},
+    {"Auto Storm","Tempestade automática","Tormenta automática"},
+    {"Auto Dedu Raid","Dedu Raid automática","Dedu Raid automática"},
+    {"Auto Winter Raid","Winter Raid automática","Winter Raid automática"},
+    {"Auto Jungle Raid","Jungle Raid automática","Jungle Raid automática"},
+    {"Auto Giants Raid","Giants Raid automática","Giants Raid automática"},
+    {"Auto Pumpkin","Abóboras automáticas","Calabazas automáticas"},
+    {"Auto Rebirth","Renascimento automático","Renacimiento automático"},
+    {"Auto Haunted Houses","Casas assombradas automáticas","Casas embrujadas automáticas"},
+    {"Auto Pumpkin King","Rei Abóbora automático","Rey Calabaza automático"},
+    {"Auto Dungeon","Dungeon automática","Mazmorra automática"},
+    {"Auto Replay","Repetir automaticamente","Repetir automáticamente"},
+    {"Auto Leave","Sair automaticamente","Salir automáticamente"},
+    {"Auto Execute","Executar após teleporte","Ejecutar tras teletransporte"},
+    {"Auto Reconnect","Reconectar automaticamente","Reconectar automáticamente"},
+    {"Auto Spin Wheel","Girar roleta automaticamente","Girar ruleta automáticamente"},
+    {"Auto Sell","Venda automática","Venta automática"},
+    {"Auto Sell Swords","Venda automática de espadas","Venta automática de espadas"},
+    {"Auto Buy","Compra automática","Compra automática"},
+    {"Auto Max","Máximo automático","Máximo automático"},
+    {"Auto Cards","Cartas automáticas","Cartas automáticas"},
+    {"Auto Next","Avançar automaticamente","Avanzar automáticamente"},
+    {"Advances to the highest unlocked level.","Avança para o nível mais alto desbloqueado.","Avanza al nivel más alto desbloqueado."},
+    {"Auto Islands","Ilhas automáticas","Islas automáticas"},
+    {"Reaches the target, then moves to the next island.","Atinge a meta e segue para a próxima ilha.","Alcanza la meta y pasa a la siguiente isla."},
+    {"Switch Teams","Alternar equipes","Alternar equipos"},
+    {"Selected cards take priority. If none are offered, remaining order is used.","As cartas selecionadas têm prioridade. Se nenhuma aparecer, usa a ordem restante.","Las cartas seleccionadas tienen prioridad. Si no aparecen, se usa el orden restante."},
+    {"Mask Name","Ocultar nome","Ocultar nombre"},
+    {"Masks your character and player-list name on your screen.","Oculta seu nome no personagem e na lista de jogadores, somente na sua tela.","Oculta tu nombre en el personaje y la lista de jugadores, solo en tu pantalla."},
+    {"Mobile Resize","Redimensionar no celular","Redimensionar en móvil"},
+    {"Enable for all shadows","Ativar para todas as sombras","Activar para todas las sombras"},
+    {"Disable for all shadows","Desativar para todas as sombras","Desactivar para todas las sombras"},
+    {"Player 4× · shadows unchanged.","Jogador 4× · sombras sem alteração.","Jugador 4× · sombras sin cambios."},
+    {"Player 2× · shadows unchanged.","Jogador 2× · sombras sem alteração.","Jugador 2× · sombras sin cambios."},
+    {"Integrated quests, mobs and resets.","Missões, mobs e resets integrados.","Misiones, enemigos y reinicios integrados."},
+    {"Quests and priorities >","Missões e prioridades >","Misiones y prioridades >"},
+    {"Convert enchanting materials.","Converta materiais de encantamento.","Convierte materiales de encantamiento."},
+    {"Convert cores between rarities.","Converta núcleos entre raridades.","Convierte núcleos entre rarezas."},
+    {"Native recipes and requirements.","Receitas e requisitos do jogo.","Recetas y requisitos del juego."},
+    {"Token Exchanges","Trocas de fichas","Intercambios de fichas"},
+    {"Choose source and destination tokens.","Escolha as fichas de origem e destino.","Elige las fichas de origen y destino."},
+    {"Craft gems and track ingredients.","Crie gemas e acompanhe os ingredientes.","Crea gemas y consulta los ingredientes."},
+    {"Gacha Tokens","Fichas de invocação","Fichas de invocación"},
+    {"Upgrade Tokens","Fichas de melhoria","Fichas de mejora"},
+    {"Batch per operation","Lote por operação","Lote por operación"},
+    {"Choose gem: —  >","Escolher gema: —  >","Elegir gema: —  >"},
+    {"SOURCE","ORIGEM","ORIGEN"},
+    {"DESTINATION","DESTINO","DESTINO"},
+    {"Change","Trocar","Cambiar"},
+    {"Materials","Materiais","Materiales"},
+    {"Recipes","Receitas","Recetas"},
+    {"Dust","Poeira","Polvo"},
+    {"Cores","Núcleos","Núcleos"},
+    {"Gems","Gemas","Gemas"},
+    {"↻ STAT REROLL","↻ REROLL DE ATRIBUTOS","↻ REROLL DE ATRIBUTOS"},
+    {"Set a target for each of the four attributes.","Defina uma meta para cada um dos quatro atributos.","Define una meta para cada uno de los cuatro atributos."},
+    {"Power","Poder","Poder"},
+    {"Power:","Poder:","Poder:"},
+    {"Ultimate Damage","Dano Ultimate","Daño Ultimate"},
+    {"Ultimate Damage:","Dano Ultimate:","Daño Ultimate:"},
+    {"Speed","Velocidade","Velocidad"},
+    {"Speed:","Velocidade:","Velocidad:"},
+    {"Attack Speed","Velocidade de ataque","Velocidad de ataque"},
+    {"Attack Speed:","Velocidade de ataque:","Velocidad de ataque:"},
+    {"Selected","Selecionadas","Seleccionadas"},
+    {"Queued","Na fila","En cola"},
+    {"Completed","Concluídas","Completadas"},
+    {"REROLL PROGRESS","PROGRESSO DO REROLL","PROGRESO DEL REROLL"},
+    {"AVAILABLE RESOURCES","RECURSOS DISPONÍVEIS","RECURSOS DISPONIBLES"},
+    {"Reset: Both >","Reset: Ambos >","Reinicio: Ambos >"},
+    {"Auto Reset Quests","Reset automático de missões","Reinicio automático de misiones"},
+    {"Auto Reset Quests is off.","Reset automático de missões desligado.","Reinicio automático de misiones desactivado."},
+    {"Auto Trial · refill Tickets","Trial automática · repor tickets","Trial automática · reponer tickets"},
+    {"Cannot afford resets: Trial until full.","Sem tickets para os resets: faz Trial até encher.","Sin tickets para reiniciar: hace Trial hasta llenar."},
+    {"Farming team: Do not switch >","Equipe de farm: Não trocar >","Equipo de farm: No cambiar >"},
+    {"Return team: Do not switch >","Equipe de retorno: Não trocar >","Equipo de regreso: No cambiar >"},
+    {"Organize daily >","Organizar diárias >","Organizar diarias >"},
+    {"Organize weekly >","Organizar semanais >","Organizar semanales >"},
+    {"Interleave priorities >","Intercalar prioridades >","Intercalar prioridades >"},
+    {"Fixed island","Ilha fixa","Isla fija"},
+    {"Mobs only on the selected island.","Farma mobs somente na ilha selecionada.","Farmea enemigos solo en la isla seleccionada."},
+    {"Strength","Força","Fuerza"},
+    {"Vitality","Vitalidade","Vitalidad"},
+    {"Agility","Agilidade","Agilidad"},
+    {"Critical","Crítico","Crítico"},
+    {"Fortune","Fortuna","Fortuna"},
+    {"Rare","Raro","Raro"},
+    {"Common","Comum","Común"},
+    {"Easy","Fácil","Fácil"},
+    {"Hard","Difícil","Difícil"},
+    {"Impossible","Impossível","Imposible"},
+    {"Sell","Vender","Vender"},
+    {"Farm","Farm","Farm"},
+    {"Auto Claim","Coleta automática","Recogida automática"},
+    {"Misc","Diversos","Varios"},
+    {"Craft","Criação","Creación"},
+    {"Dungeon","Dungeon","Mazmorra"},
+    {"Dungeon Portal","Portal de dungeon","Portal de mazmorra"},
+    {"Dungeon com chave","Dungeon com chave","Mazmorra con llave"},
+    {"Island Rifts","Fendas das ilhas","Grietas de las islas"},
+    {"RAIDS","RAIDS","RAIDS"},
+    {"Purchase batch: 1x · quantity and reserve","Lote por compra: 1x · quantidade e reserva","Lote por compra: 1x · cantidad y reserva"},
+    {"Ticket purchases paused: Limit Breaker is active; keep 1,000 Tickets after the purchase.","Compras com tickets pausadas: Limit Breaker ativo; é necessário manter 1.000 tickets após a compra.","Compras con tickets pausadas: Limit Breaker activo; hay que conservar 1.000 tickets después de comprar."},
+    {"Limit Breaker: farming through Auto Dungeon · Portal. Trial refill when Tickets are insufficient.","Limit Breaker: farm pelo Auto Dungeon · Portal. Reposição na Trial quando faltarem Tickets.","Limit Breaker: farmeando con Auto Dungeon · Portal. Trial cuando falten Tickets."},
+    {"Limit Breaker: returning to the selected Portal.","Limit Breaker: retornando para o Portal selecionado.","Limit Breaker: regresando al Portal seleccionado."},
+    {"Native replay requested; waiting for game confirmation.","Replay nativo solicitado; aguardando confirmação do jogo.","Repetición nativa solicitada; esperando confirmación del juego."},
+    {"Auto Quest: aguardando confirmação do renascimento.","Auto Quest: aguardando confirmação do renascimento.","Auto Quest: esperando confirmación del renacimiento."},
+    {"Auto Quest: coleta pausada.","Auto Quest: coleta pausada.","Auto Quest: recogida pausada."},
+    {"Auto Quest: saindo da tarefa anterior para aplicar o novo objetivo.","Auto Quest: saindo da tarefa anterior para aplicar o novo objetivo.","Auto Quest: saliendo de la tarea anterior para aplicar el nuevo objetivo."},
+    {"Island Rift: replay price is not free; waiting.","Fenda da Ilha: replay tem custo; aguardando.","Grieta de la Isla: repetir tiene coste; esperando."},
+    {"Island Rifts: loading native data.","Fendas das Ilhas: carregando dados do jogo.","Grietas de las Islas: cargando datos del juego."},
+    {"Kamish: collection paused for arena priority.","Kamish: coleta pausada pela prioridade da arena.","Kamish: recogida pausada por prioridad de la arena."},
+    {"Eclipse Court: aguardando NEXT na tela de resultados.","Eclipse Court: aguardando NEXT na tela de resultados.","Eclipse Court: esperando NEXT en la pantalla de resultados."},
+}
+for _,row in ipairs(rows) do
+    state.languageCatalog[row[1]]={EN=row[1],PT=row[2],ES=row[3],exactOnly=true}
+end
+-- Long, unambiguous prefixes also cover live counters and native error details.
+local prefixes={
+    {"Mobs: ","Mobs: ","Enemigos: "},
+    {"Rebirths: ","Renascimentos: ","Renacimientos: "},
+    {"Pumpkins: ","Abóboras: ","Calabazas: "},
+    {"Owned: ","No inventário: ","En inventario: "},
+    {"Purchase batch: ","Lote por compra: ","Lote por compra: "},
+    {"quantity and reserve","quantidade e reserva","cantidad y reserva"},
+    {"Farming team: ","Equipe de farm: ","Equipo de farm: "},
+    {"Return team: ","Equipe de retorno: ","Equipo de regreso: "},
+    {"Choose gem: ","Escolher gema: ","Elegir gema: "},
+    {"Do not switch","Não trocar","No cambiar"},
+    {"Auto Buy: ","Compra automática: ","Compra automática: "},
+    {"Purchase waiting: ","Compra em espera: ","Compra en espera: "},
+    {"Could not save purchase quantity: ","Não foi possível salvar a quantidade de compra: ","No se pudo guardar la cantidad de compra: "},
+    {"Buying ","Comprando ","Comprando "},
+}
+for _,row in ipairs(prefixes) do
+    state.languageCatalog[row[1]]={EN=row[1],PT=row[2],ES=row[3]}
+end
+-- These source keys originate in Portuguese rather than English.
+state.languageCatalog["Auto Quest: aguardando confirmação do renascimento."].EN="Auto Quest: waiting for Rebirth confirmation."
+state.languageCatalog["Auto Quest: coleta pausada."].EN="Auto Quest: collection paused."
+state.languageCatalog["Auto Quest: saindo da tarefa anterior para aplicar o novo objetivo."].EN="Auto Quest: leaving the previous task to apply the new objective."
+state.languageCatalog["Eclipse Court: aguardando NEXT na tela de resultados."].EN="Eclipse Court: waiting for NEXT on the results screen."
+state.languageCatalog["Compra em espera: "]={EN="Purchase waiting: ",ES="Compra en espera: "}
+end
 -- UI LANGUAGE: native event names and editable text are preserved.
 do
     local catalog = state.languageCatalog
     -- Resolve complete phrases in either source language. Replacements are emitted once,
     -- never fed back into the dictionary (prevents mixed/cascaded translations).
     local aliases, exact, trie = {}, {}, {}
+    local function wordByte(byte)
+        return byte and (byte >= 128 or (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90)
+            or (byte >= 97 and byte <= 122) or byte == 95)
+    end
+    function state.refreshLanguageCatalog()
+    aliases, exact, trie = {}, {}, {}
     local keys = {}
     for key in pairs(catalog) do table.insert(keys, key) end
     table.sort(keys, function(a, b) return #a == #b and a < b or #a > #b end)
     for _, key in ipairs(keys) do
         local entry = catalog[key]
-        local record = {PT = entry.PT or key, EN = entry.EN or key, ES = entry.ES or key}
+        local record = {PT = entry.PT or key, EN = entry.EN or key, ES = entry.ES or key, exactOnly=entry.exactOnly}
         exact[key] = record
         for _, language in ipairs({"PT", "EN", "ES"}) do
             local value = record[language]
@@ -4145,11 +4324,8 @@ do
     end
     -- Explicit source entries win over an ambiguous reverse alias.
     for key, record in pairs(exact) do aliases[key] = record end
-    local function wordByte(byte)
-        return byte and (byte >= 128 or (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90)
-            or (byte >= 97 and byte <= 122) or byte == 95)
-    end
     for key, record in pairs(aliases) do
+        if record.exactOnly then continue end
         local node = trie
         for index = 1, #key do
             local byte = key:byte(index)
@@ -4158,6 +4334,8 @@ do
         end
         node.record, node.key = record, key
     end
+    end
+    state.refreshLanguageCatalog()
     local nodes = setmetatable({}, {__mode = "k"})
     function state.translate(text)
         if type(text) ~= "string" or text == "" then return text end
@@ -4228,6 +4406,7 @@ do
         end
     end
     function state.localizeTree(root)
+        state.refreshLanguageCatalog()
         local function bind(node)
             if node:IsA("GuiBase2d") then pcall(function() node.AutoLocalize = false end) end
             if node:IsA("TextLabel") or node:IsA("TextButton") then state.bindLanguage(node)
@@ -4238,6 +4417,7 @@ do
         connect(root.DescendantAdded, bind)
     end
     function state.applyLanguage()
+        state.refreshLanguageCatalog()
         -- Snapshot all canonical source values before mirrored controls update.
         local plan = {}
         for node, record in pairs(nodes) do table.insert(plan, {node, record, record.source}) end
@@ -4367,6 +4547,9 @@ function state.collectionPriority()
     return nil
 end
 function state.replayAllowed()
+    if state.questTrialRefillPending and state.questTrialRefillPending() then return not player.GameplayPaused and not state.panic end
+    if state.limitBreakerPortalRequested and state.limitBreakerPortalRequested()
+        and (not insideDungeon() or state.limitBreakerPortalOwnsRun()) then return dungeon.repeatGems==true end
     if state.questPriorityActive and state.questPriorityActive() then return false end
     if autoQuest.enabled and (autoQuest.scope == "all" or autoQuest.scope == "recurring") and autoQuest.journey then return false end
     if dungeon.mode=="key" and dungeon.enabled and dungeon.autoKeys and state.autoKeysCanReplay then
@@ -4972,6 +5155,15 @@ do
     local sellToggle = state.controlRow("Auto Sell", "Preserva equipadas, trancadas e em expedição.", sellPage)
     sellToggle.Name = "AutoSellShadows"
     toggleLook(sellToggle, autoSell.enabled)
+    state.languageCatalog["Vender em lote"]={EN="Bulk sell",ES="Vender en lote"}
+    state.languageCatalog["Acelera a venda somente dos ranks marcados."]={EN="Faster sales of selected ranks only.",ES="Venta más rápida solo de los rangos marcados."}
+    local bulkToggle=state.controlRow("Vender em lote", "Acelera a venda somente dos ranks marcados.",sellPage)
+    bulkToggle.Name="SellShadowBulk"
+    toggleLook(bulkToggle,autoSell.bulk)
+    connectUI(bulkToggle,function()
+        state.commitSellPreference(autoSell,"bulk",not autoSell.bulk)
+        toggleLook(bulkToggle,autoSell.bulk)
+    end)
     local status = make("TextLabel", {Name = "AutoSellStatus", Text = "Desligado. Marque os ranks que deseja vender."}, sellPage)
     local list = make("Frame", {Name = "SellRanks"}, sellPage)
     local rankButtons = {}
@@ -5034,6 +5226,12 @@ do
         for key,id in pairs(clientData.Get("Equips","Pets") or {}) do
             if type(id)=="string" then equipped[id]=true elseif id==true then equipped[key]=true end
         end
+        -- The native Sell Many screen also excludes every saved team's shadows.
+        for _,team in pairs(clientData.Get("Teams") or {}) do
+            if type(team)=="table" and type(team.Pets)=="table" then
+                for _,id in pairs(team.Pets) do if type(id)=="string" then equipped[id]=true end end
+            end
+        end
         for id in pairs(run.receipts) do
             if inventory[id]==nil then
                 run.receipts[id]=nil;run.pending[id]=nil;run.retry[id]=nil;run.attempts[id]=nil;run.sold+=1
@@ -5062,7 +5260,7 @@ do
                 else available[id]=pet end
             end
         end
-        local ids=sellableShadows(available,equipped,autoSell.ranks)
+        local ids=sellableShadows(available,equipped,autoSell.ranks,autoSell.bulk)
         -- Isolate unconfirmed UIDs so one server-rejected item cannot poison another full batch.
         if #ids==0 then for id in pairs(retryReady) do ids={id};break end end
         if #ids==0 then
@@ -5072,7 +5270,7 @@ do
         end
         -- Recheck controls immediately before the send; a blocked/failed bridge creates no receipt.
         if state.panic or state.stopped or not autoSell.enabled or player.GameplayPaused then return end
-        run.nextSendAt=now+2
+        run.nextSendAt=now+(autoSell.bulk and 0.5 or 2)
         local ok,result=pcall(function() return petEvent:Fire({Event="SellPet",Pets=ids}) end)
         if not ok or result==false then
             status.Text="Venda em espera: "..(ok and state.translate("pedido não enviado; nova tentativa automática.") or tostring(result))
@@ -5085,9 +5283,8 @@ do
         clientData.WaitForLoaded()
         local petEvent=state.pausableBridge(require(storage.BridgeNet2).ReferenceBridge("PET_EVENT"))
         while alive do
-            task.wait(2)
+            task.wait(0.25)
             if not alive then break end
-            if state.questPriorityActive and state.questPriorityActive() then continue end
             local ok,problem=pcall(state.autoSellStep,petEvent)
             if not ok then status.Text="Venda em espera: "..tostring(problem) end
         end
@@ -5181,7 +5378,7 @@ do
         while alive do
             task.wait(2)
             if not alive then break end
-            if state.panic or state.questPriorityActive and state.questPriorityActive() then continue end
+            if state.panic then continue end
             local ok, problem = pcall(function()
                 local now = os.clock()
                 if now >= nextRanks then nextRanks = now + 10 refreshRanks() end
@@ -5923,10 +6120,26 @@ do
         local count=state.currentIslandKeyStock()
         return count~=nil and count>0
     end
+    function state.keyReplayNeedsReturn(now)
+        if not dungeon.enabled or not dungeon.autoKeys or dungeon.mode~="key" or not insideDungeon() then state.keyReplayWait=nil;return false end
+        local completed=storage:GetAttribute("DungeonCompleted")==true or state.finishedMode=="key"
+        if not completed then state.keyReplayWait=nil;return false end
+        local room=storage:GetAttribute("CurrentRoom")
+        local pending=state.nativeRestartPending
+        local wait=state.keyReplayWait
+        if not wait or wait.room~=room then wait={room=room,at=now};state.keyReplayWait=wait end
+        if pending and pending.mode=="key" then
+            if pending.refused or pending.intent=="leave" then return true end
+            if pending.sent then return now-(pending.requestedAt or wait.at)>=45 end
+            if not pending.closed and now<=(pending.deadline or 0) then return false end
+        end
+        return now-wait.at>=15
+    end
     function state.keyRunBlocksExit()
         local quest=autoQuest.journey
         if state.recurringQuestPolicy.enabled(autoQuest) and state.recurringQuestPolicy.validJourney(quest) and quest.phase=="inside" then return false end
         if dungeon.mode~="key" or not insideDungeon() then return false end
+        if state.keyReplayNeedsReturn(os.clock()) then return false end
         if not dungeon.autoLeave and not (dungeon.enabled and dungeon.autoKeys) then return true end
         if state.keyRestartActive() then return true end
         if storage:GetAttribute("DungeonCompleted")~=true and state.finishedMode~="key" then return true end
@@ -6283,7 +6496,7 @@ local function installDungeonRunes()
         local questJob = state.questRuneJob()
         if questJob then recovery={blocked={}};return prepareQuestRune(room, questJob) end
         if state.panic then return false, "Pânico ativo: automações pausadas." end
-        local reuse = config.reuseLast and config.replayPending and dungeon.repeatGems == true
+        local reuse = false -- Automatic reuse of the previous loadout was removed.
         if not config.enabled and not reuse then cancelNativeEquip() pending = nil recovery={blocked={}} state.runeWarning = nil return true end
         if not room or room.Leader ~= player.UserId then return false, "Runas: somente o líder pode configurar o grupo." end
         if room.Locked then return false, "Runas: grupo iniciando; aguardando confirmação." end
@@ -6363,7 +6576,7 @@ local function installDungeonRunes()
             return true
         end
         if not room or room.Leader ~= player.UserId or type(room.Items) ~= "table" then return false, "Runas: aguardando dados do grupo." end
-        if not config.enabled and not config.reuseLast then return true end
+        if not config.enabled then return true end
         local last = {}
         for slot, id in ipairs(room.Items) do last[tostring(slot)] = itemsInfo[id] and id or "" end
         local before, known, replay = config.last, config.lastKnown, config.replayPending
@@ -6386,10 +6599,10 @@ local function installDungeonRunes()
     local open = state.controlButton("DungeonRunesOpen", "Configurar  ›", ui.shortcut)
     ui.panel = make("Frame", {Name = "DungeonRunesSettings", Visible = false}, window)
     local equip = state.controlRow("Auto Equipar Runas", "Confirma os espaços antes de iniciar pelo Auto Dungeon.", ui.panel)
-    local reuse = state.controlRow("Equipar último", "Usa a configuração anterior ao repetir a dungeon de portal.", ui.panel)
     local copyOld = state.controlButton("CopyLastRunes", "Copiar últimas para seleção", ui.panel)
     local status = state.controlLabel("DungeonRunesStatus", "", ui.panel)
-    equip.Name, reuse.Name = "AutoEquipRunes", "EquipLastRunes"
+    equip.Name = "AutoEquipRunes"
+    config.reuseLast=false
     local list = make("ScrollingFrame", {Name = "DungeonRuneSlots"}, ui.panel)
     local rowConnections, lastCount, lastConfirmed = {}, nil, nil
     local render
@@ -6442,14 +6655,10 @@ local function installDungeonRunes()
             end, nil, rowConnections)
         end
         toggleLook(equip, config.enabled)
-        toggleLook(reuse, config.reuseLast)
     end
     connectUI(open, function() ui.panel.Visible = true render() end)
     connectUI(equip, function()
         config.enabled = not config.enabled cancelNativeEquip() pending, replayRoom, replaySelection = nil, nil, nil save() render()
-    end)
-    connectUI(reuse, function()
-        config.reuseLast = not config.reuseLast cancelNativeEquip() pending, replayRoom, replaySelection = nil, nil, nil save() render()
     end)
     connectUI(copyOld, function()
         local previous = nativeLast()
@@ -6461,8 +6670,7 @@ local function installDungeonRunes()
     function state.refreshDungeonRunes(mode)
         ui.shortcut.Visible = mode.id == "portal"
         if mode.id ~= "portal" then ui.panel.Visible = false end
-        ui.caption.Text = (config.enabled and "Auto Equipar ativo." or "Auto Equipar desligado.") .. "\n"
-            .. (config.reuseLast and "Últimas runas no Replay: ativo." or "Últimas runas no Replay: desligado.")
+        ui.caption.Text = config.enabled and "Auto Equipar ativo." or "Auto Equipar desligado."
     end
     table.insert(cleanupCallbacks, function() cancelNativeEquip() for _, c in ipairs(rowConnections) do c:Disconnect() end end)
     task.spawn(function()
@@ -6474,7 +6682,7 @@ local function installDungeonRunes()
                 local ok, problem = pcall(function()
                     local count, confirmed = countSlots()
                     if count ~= lastCount or confirmed ~= lastConfirmed then render() end
-                    toggleLook(equip, config.enabled) toggleLook(reuse, config.reuseLast)
+                    toggleLook(equip, config.enabled)
                 end)
                 if not ok then status.Text = "Runas: " .. tostring(problem) end
             end
@@ -6821,9 +7029,12 @@ do
         table.insert(cleanupCallbacks, function() subscription:Disconnect() end)
     end
     function state.shouldAutoLeave(mode, finished, replayExpired)
+        if mode=="trial" and state.questTrialRefillPending and state.questTrialRefillPending() then return false end
         if state.questOwnsRun(mode) then return finished==true end
         if mode=="key" then
-            if not finished or state.keyRestartActive() then return false end
+            if not finished then return false end
+            if state.keyReplayNeedsReturn(os.clock()) then return true end
+            if state.keyRestartActive() then return false end
             if dungeon.enabled and dungeon.autoKeys then return state.autoKeysNeedExit() end
             -- Disabling Auto Leave must also disable its key-dungeon fallback.
             return dungeon.autoLeave==true and state.keyStockExhausted(os.clock())
@@ -6868,6 +7079,9 @@ do
             local mode = currentMode()
             if lastMode ~= mode then endedAt, completedAt, lastRequest, attempts, lastMode = nil, nil, -math.huge, 0, mode end
             local finished = (not waveModes[mode] and storage:GetAttribute("DungeonCompleted") == true) or state.finishedMode == mode
+            if mode=="key" and state.keyReplayNeedsReturn(os.clock()) then
+                state.nativeRestartPending=nil
+            end
             if finished then completedAt = completedAt or os.clock() else completedAt = nil end
             if state.keyRunBlocksExit() or not state.shouldAutoLeave(mode, finished, completedAt ~= nil and os.clock() - completedAt >= 25) then
                 state.autoLeaving, endedAt, attempts = nil, nil, 0
@@ -6908,6 +7122,15 @@ do
         general:Fire({Event = pending.nativeMode == "Dungeon" and "DungeonAction" or "RaidAction",
             Action = pending.nativeMode == "Dungeon" and "RunAgain" or "Vote", Index = index})
     end
+    local function choiceId(choice)
+        local buff=type(choice)=="table" and choice.Buff
+        return type(buff)=="table" and buff.Id or type(choice)=="table" and choice.Id
+    end
+    local function choiceIndex(pending,action)
+        if pending.nativeMode~="Dungeon" then return action=="leave" and 2 or 1 end
+        local wanted=action=="leave" and "Leave" or "RunAgain"
+        for index,choice in ipairs(pending.choices) do if choiceId(choice)==wanted then return index end end
+    end
     function state.nativeRestartStep()
         local pending = state.nativeRestartPending
         if state.panic or not pending then return end
@@ -6921,12 +7144,14 @@ do
             return
         end
         if pending.sent or pending.closed or os.clock() > pending.deadline then return end
-        if not state.replayAllowed() or state.questOwnsRun(pending.mode) or state.autoLeaving or player.GameplayPaused then return end
-        if not pending.canVote or not pending.choices[1] then return end
+        local refillReplay=pending.mode=="trial" and state.questTrialRefillPending and state.questTrialRefillPending()
+        if not state.replayAllowed() or state.questOwnsRun(pending.mode) and not refillReplay or state.autoLeaving or player.GameplayPaused then return end
+        local index=choiceIndex(pending,"replay")
+        if not pending.canVote or not index or not pending.choices[index] then return end
         -- The native offer/handler validates free entry, Tickets and raid keys. It is
         -- sent once; the older paid reset worker stays blocked for this end-of-run offer.
         pending.sent, pending.intent, pending.requestedAt = true, "replay", os.clock()
-        send(1, pending)
+        send(index, pending)
         state.entryPending = {inside = true, root = rootPart(), room = room, completed = storage:GetAttribute("DungeonCompleted") == true}
         state.entryUntil = os.clock() + 15
         dungeonStatus.Text = "Replay nativo solicitado; aguardando confirmação do jogo."
@@ -6934,10 +7159,11 @@ do
     function state.nativeExitAfterRun(mode)
         if state.keyRunBlocksExit() then return false end
         local pending = state.nativeRestartPending
+        local index=pending and choiceIndex(pending,"leave")
         if state.panic or not pending or pending.mode ~= mode or not pending.canVote
-            or not pending.choices[2] or pending.sent or pending.closed or os.clock() > pending.deadline then return false end
+            or not index or not pending.choices[index] or pending.sent or pending.closed or os.clock() > pending.deadline then return false end
         pending.sent, pending.intent = true, "leave"
-        send(2, pending)
+        send(index, pending)
         return true
     end
     local subscription = require(storage.BridgeNet2).ReferenceBridge("TRIAL_EVENT"):Connect(function(packet)
@@ -6967,7 +7193,11 @@ do
         elseif (packet.Event == "BuffChosen" or packet.Event == "CloseBuffSelection") and state.nativeRestartPending
             and (not packet.Mode or packet.Mode == state.nativeRestartPending.nativeMode) then
             state.nativeRestartPending.closed = true
-            if packet.Event == "BuffChosen" and (packet.Again == false or packet.Index == 2) then
+            local pending=state.nativeRestartPending
+            local selected=pending.choices[tonumber(packet.Index)]
+            if packet.Event == "BuffChosen" and (packet.Again == false
+                or pending.nativeMode=="Dungeon" and choiceId(selected)=="Leave"
+                or pending.nativeMode~="Dungeon" and packet.Index==2) then
                 state.nativeRestartPending.intent = "leave"
             end
         end
@@ -7145,7 +7375,7 @@ do
         while alive do
             task.wait(1)
             if not alive then break end
-            if state.panic or state.questPriorityActive and state.questPriorityActive() then continue end
+            if state.panic then continue end
             local ok, problem = pcall(state.gearTomeStep)
             if not ok then state.gearTomeStatus = "Gear Tome: " .. tostring(problem) end
         end
@@ -7508,7 +7738,8 @@ task.spawn(function()
             continue
         end
         if questJob and (inside or not questMode) then continue end
-        if state.questPriorityActive and state.questPriorityActive() and not questMode then continue end
+        if state.questPriorityActive and state.questPriorityActive() and not questMode
+            and not (state.limitBreakerPortalRequested and state.limitBreakerPortalRequested()) then continue end
         if not dungeon.enabled and not questMode then continue end
         if questMode then
             local ok, allowed, reason = pcall(state.worldQuestEntryGuard, questJob, inside)
@@ -7534,6 +7765,8 @@ task.spawn(function()
         local config = questMode or dungeon
         local mode = dungeonMode(config)
         if not questMode and not inside and mode.id=="key" and dungeon.autoKeys then
+            local readyOk,ready=pcall(state.syncKeyAFK,true)
+            if not readyOk or not ready then dungeonStatus.Text="Auto Keys: aguardando ativar Usar Dungeon Keys no AFK nativo." continue end
             local ok, selected = pcall(state.autoIslandKey, dungeon.key)
             if not ok then dungeonStatus.Text="Auto Keys: waiting for native key data." continue end
             if not selected then dungeonStatus.Text="Auto Keys: no available island keys. Waiting for stock." continue end
@@ -8770,15 +9003,43 @@ do
         end
         return true
     end
+    function state.syncKeyAFK(wanted)
+        prepare()
+        if not rows.AfkKey then return false end
+        if wanted then
+            if not state.keyAFKOriginal then
+                state.keyAFKOriginal={AfkKey=read("AfkKey"),AfksSettings=read("AfksSettings")}
+                if not save() then state.keyAFKOriginal=nil;return false end
+            end
+            if not read("AfkKey") then apply("AfkKey",true) end
+            if not read("AfksSettings") then apply("AfksSettings",true) end
+            return read("AfkKey") and read("AfksSettings")
+        end
+        local original=state.keyAFKOriginal
+        if original then
+            if read("AfkKey")~=original.AfkKey then apply("AfkKey",original.AfkKey) end
+            if not original.AfksSettings and read("AfksSettings") then
+                local another=false
+                for key in pairs(rows) do if key~="AfksSettings" and key:sub(1,3)=="Afk" and read(key) then another=true;break end end
+                if not another then apply("AfksSettings",false) end
+            end
+            state.keyAFKOriginal=nil
+            if not save() then state.keyAFKOriginal=original;return false end
+        end
+        return true
+    end
     function state.syncCastleAFK(forceRestore)
         prepare()
         local owned = state.castleAFK
         local quest=state.questPriorityActive and state.questPriorityActive() or state.recurringQuestPolicy.enabled(autoQuest)
+        if not quest and autoQuest.nativeAFK then state.syncQuestAFK(nil) end
+        local keyWanted=not forceRestore and not quest and not state.panic and not state.stopped
+            and dungeon.enabled==true and dungeon.autoKeys==true and dungeon.mode=="key"
+        if not state.syncKeyAFK(keyWanted) then owned.status="Auto Keys: aguardando confirmar Usar Dungeon Keys no AFK nativo.";return end
         if not forceRestore and quest then
             local mode=autoQuest.journey and autoQuest.journey.mode or "waiting"
             state.syncQuestAFK(mode);owned.status="Auto Quest: AFK limitado ao modo exigido ("..mode..").";return
         end
-        if autoQuest.nativeAFK then state.syncQuestAFK(nil) end
         local wanted = not forceRestore and not state.panic and ((dungeon.enabled == true and dungeon.mode == "infernal")
             or state.questOwnsRun and state.questOwnsRun("infernal"))
         if wanted then
@@ -9937,13 +10198,59 @@ do
         end)
         if receiptConnection and type(receiptConnection.Disconnect) == "function" then table.insert(connections, receiptConnection) end
     end
+    function state.reconcileBuyReceipts()
+        if not catalogReady then if loadBuyCatalog() then render() else return false end end
+        local now=workspace:GetServerTimeNow()
+        for key,receipt in pairs(autoBuy.unconfirmed) do
+            if buyReceiptStatus(receipt,now,lookup[key])=="confirmed" then
+                local old=autoBuy.unconfirmed[key];autoBuy.unconfirmed[key]=nil
+                if not save() then autoBuy.unconfirmed[key]=old end
+            end
+        end
+        local receipt=autoBuy.pending
+        if receipt and buyReceiptStatus(receipt,now,lookup[receipt.key])=="confirmed" then
+            autoBuy.pending=nil;if not save() then autoBuy.pending=receipt end
+        end
+        return true
+    end
+    function state.buyLimitBreakerActive()
+        local limit=autoQuest.splitQuests and autoQuest.limitBreakerEnabled or autoQuest.profile=="limitbreaker"
+        if autoQuest.splitQuests then limit=autoQuest.limitBreakerEnabled==true end
+        return limit and state.questPriorityActive and state.questPriorityActive() or false
+    end
+    function state.buyEffectiveReserve(currency)
+        return math.max(tonumber(autoBuy.reserves[currency]) or 0,
+            currency=="Ticket" and state.buyLimitBreakerActive() and 1000 or 0)
+    end
+    function state.buyTicketNotice(item,balance,cost)
+        if not item or item.PriceType~="Ticket" or not state.buyLimitBreakerActive() then return nil end
+        if balance==nil or balance-(tonumber(cost) or 0)>=1000 and balance>=1000 then return nil end
+        return uiState.language=="PT" and "Compras com tickets pausadas: Limit Breaker ativo; é necessário manter 1.000 tickets após a compra."
+            or uiState.language=="ES" and "Compras con tickets pausadas: Limit Breaker activo; hay que conservar 1.000 tickets después de comprar."
+            or "Ticket purchases paused: Limit Breaker is active; keep 1,000 Tickets after the purchase."
+    end
+    function state.buyPriorityNotice()
+        if not autoBuy.enabled or not catalogReady then return nil end
+        local balance=tonumber(shopData.Have("Ticket"))
+        for _,entry in ipairs(catalog) do
+            if autoBuy.items[entry.key].enabled and entry.item.PriceType=="Ticket" then
+                local notice=state.buyTicketNotice(entry.item,balance,tonumber(shopData.Total(entry.item,1,1)))
+                if notice then return notice end
+            end
+        end
+    end
     task.spawn(function()
         clientData.WaitForLoaded()
         while alive do
             task.wait(2)
             if not alive then break end
-            if state.panic or state.questPriorityActive and state.questPriorityActive() then continue end
+            if state.panic then continue end
             local success, problem = pcall(function()
+                state.reconcileBuyReceipts()
+                -- BUY PRIORITY NOTICE BEGIN
+                local notice=state.buyPriorityNotice()
+                -- A Ticket notice never blocks purchases with other currencies.
+                -- BUY PRIORITY NOTICE END
                 if not catalogReady then
                     if loadBuyCatalog() then render()
                     else status.Text = "Loja indisponível: " .. tostring(loadProblem) return end
@@ -9965,7 +10272,7 @@ do
                         end
                         local balance=tonumber(shopData.Have(item.PriceType)) or 0
                         local cost=tonumber(shopData.Total(item,1,1)) or 0
-                        if balance-(autoBuy.reserves[item.PriceType] or 0)<cost then note="Saldo insuficiente; aguardando." end
+                        if balance-state.buyEffectiveReserve(item.PriceType)<cost then note="Saldo insuficiente; aguardando." end
                     end
                     if unconfirmedPurchase(entry,now) then note="Aguardando confirmação; sem repetir cobrança." end
                     if settings.enabled and state.buyInfusionBlocked(item) then note=state.infusionText("Auto Buy aguarda a Infusão terminar.") end
@@ -9973,6 +10280,10 @@ do
                         note = "Reset: " .. math.ceil(settings.resetUntil-now) .. "s"
                     end
                     if not settings.enabled then note="Desligado." end
+                    local ticketNotice=settings.enabled and state.buyTicketNotice(item,tonumber(shopData.Have(item.PriceType)),tonumber(shopData.Total(item,1,1)))
+                    if ticketNotice then note=ticketNotice end
+                    if text:GetAttribute("BuyBaseColor")==nil then text:SetAttribute("BuyBaseColor",text.TextColor3) end
+                    text.TextColor3=ticketNotice and Color3.fromRGB(255,196,82) or text:GetAttribute("BuyBaseColor")
                     text.Text = tostring(item.Price)..(item.PriceType=="Ticket" and " tickets" or " candy").." · "..(settings.target==0 and "Compra contínua" or "Restam "..settings.target).." · "..note
                     local row=list:FindFirstChild(entry.key)
                     local inventoryLabel=row and row:FindFirstChild("InventoryOwned")
@@ -9998,6 +10309,7 @@ do
                 local waitingRetry = false
                 local waitingInfusion=false
                 local waitingCraft=false
+                local waitingTicket
                 for _, entry in ipairs(catalog) do
                     local item, settings = entry.item, autoBuy.items[entry.key]
                     if not settings.enabled or shopData.Lock(entry.shop, item) then continue end
@@ -10008,10 +10320,13 @@ do
                     if unconfirmedPurchase(entry, now) then waitingRetry = true continue end
                     local owned, balance = stock(entry), tonumber(shopData.Have(item.PriceType)) or 0
                     local price = tonumber(shopData.Total(item, 1, 1))
+                    local ticketNotice=state.buyTicketNotice(item,balance,price)
+                    if ticketNotice then waitingTicket=ticketNotice;continue end
                     local give = tonumber(item.PriceInfo.GiveAmount) or 1
                     local target = state.buyTargetOperations(settings, give)
                     local bought = tonumber(shopData.Bought(entry.shop, item)) or 0
-                    local amount = purchaseAmount(target, 0, balance, autoBuy.reserves[item.PriceType], price, bought, item.PriceInfo.Limit, item.PriceInfo.CanMultiple, item.PriceInfo.OnlyOne)
+                    local reserve=state.buyEffectiveReserve(item.PriceType)
+                    local amount = purchaseAmount(target, 0, balance, reserve, price, bought, item.PriceInfo.Limit, item.PriceInfo.CanMultiple, item.PriceInfo.OnlyOne)
                     if type(shopData.Amount) == "function" and price and price > 0 then
                         local batch = autoBuy.batch == "MAX" and "Max" or autoBuy.batch == "10x" and 10 or 1
                         local native = tonumber(shopData.Amount(entry.shop, item, batch, 1)) or 0
@@ -10019,7 +10334,7 @@ do
                             item.PriceInfo.CanMultiple == true and 1000 or 1,
                             item.PriceInfo.OnlyOne == true and 1 or 1000))
                         if item.PriceInfo.Limit then amount = math.min(amount, math.max(0, math.floor(item.PriceInfo.Limit - bought))) end
-                        local available = math.max(0, balance - (autoBuy.reserves[item.PriceType] or 0))
+                        local available = math.max(0, balance - reserve)
                         local low, high = 0, amount
                         while low < high do
                             local middle = math.floor((low + high + 1) / 2)
@@ -10051,6 +10366,7 @@ do
                     status.Text = "Comprando " .. amount .. " × " .. item.Name .. "." return
                 end
                 status.Text = waitingCraft and state.infusionText("Aguardando Craft: recursos compartilhados.") or waitingInfusion and state.infusionText("Auto Buy aguarda a Infusão terminar.")
+                    or waitingTicket or notice
                     or waitingRetry and "Compra sem confirmação. Pedido preservado para evitar cobrança duplicada."
                     or "Aguardando saldo, liberação ou novos pedidos de compra."
             end)
@@ -10511,6 +10827,63 @@ function state.questTicketStock()
     if not ok or type(capacity)~="number" or capacity~=capacity or capacity<=0 or capacity==math.huge then return stock,nil end
     return stock,capacity
 end
+function state.limitBreakerPortalEnabled()
+    local limit=autoQuest.splitQuests and autoQuest.limitBreakerEnabled or autoQuest.profile=="limitbreaker"
+    if autoQuest.splitQuests then limit=autoQuest.limitBreakerEnabled==true end
+    return limit and policy.enabled(autoQuest) and dungeon.enabled==true and dungeon.mode=="portal"
+end
+function state.limitBreakerPortalRequested()
+    if not state.limitBreakerPortalEnabled() or state.panic or state.stopped or state.autoLeaving or autoQuest.journey then return false end
+    local stock,capacity=state.questTicketStock()
+    local reset=state.questReset
+    local refill=(not autoQuest.splitQuests or autoQuest.resetQuests==true) and (not state.questProfiles or state.questProfiles.refill(autoQuest))
+    local partial=autoQuest.ticketRefillPartial and reset and reset.canAffordReset and reset.canAffordReset(stock)
+    if refill and not partial and stock~=nil and (not capacity or stock<capacity)
+        and (stock<=0 or reset and (reset.shortage or reset.ticketShortage and reset.ticketShortage(stock))) then return false end
+    return true
+end
+function state.limitBreakerPortalOwnsRun()
+    return state.limitBreakerPortalRequested() and insideDungeon() and state.recurringRunMatches({mode="portal"})
+end
+local function nativeTrialWaiting()
+    -- Recover completion evidence after reloading the Hub inside a finished Trial.
+    if type(player.FindFirstChild)~="function" then return false end
+    local gui=player:FindFirstChild("PlayerGui")
+    local node=gui
+    for _,name in ipairs({"Hud","UI_Dungeon","Root","mo_dg","mo_plate","NUI_Note"}) do
+        node=node and node:FindFirstChild(name)
+    end
+    if not node or not node:IsA("TextLabel") then return false end
+    local parent=node
+    while parent and parent~=gui do
+        if parent:IsA("GuiObject") and not parent.Visible or parent:IsA("ScreenGui") and not parent.Enabled then return false end
+        parent=parent.Parent
+    end
+    local text=string.upper(node.Text)
+    return text:find("NEXT RUN WHEN THE TIME TRIAL OPENS",1,true)~=nil
+        or text:find("CORRIDA QUANDO",1,true)~=nil and text:find("ABERTO",1,true)~=nil
+end
+function state.questTrialRefillEnded()
+    local job=autoQuest.journey
+    local limit=autoQuest.splitQuests and autoQuest.limitBreakerEnabled or autoQuest.profile=="limitbreaker"
+    if not limit or not policy.enabled(autoQuest) or not job or job.bucket~="TicketFarm" or job.mode~="trial"
+        or not insideDungeon() or not state.recurringRunMatches(job) then return false end
+    if storage:GetAttribute("DungeonCompleted")~=true and state.finishedMode~="trial" and not nativeTrialWaiting() then return false end
+    loadNative()
+    local native=nativeModes.trial
+    if not nativeOK or not native or type(nativeSchedule)~="function" then return false end
+    local ok,schedule=pcall(nativeSchedule,native,workspace:GetServerTimeNow())
+    return ok and type(schedule)=="table" and schedule.Open==false
+end
+function state.questTrialRefillPending()
+    local job=autoQuest.journey
+    if not policy.enabled(autoQuest) or state.panic or not job or job.bucket~="TicketFarm"
+        or job.mode~="trial" or not insideDungeon() or not state.recurringRunMatches(job) then return false end
+    if state.questTrialRefillEnded() then return false end
+    local stock,maximum=state.questTicketStock()
+    if state.refillTeams and state.refillTeams.needsRestart and state.refillTeams.needsRestart(job) then return false end
+    return stock~=nil and maximum~=nil and stock<maximum
+end
 local function eligible(ref)
     return (tonumber(clientData.Get("Rank")) or 0)>=(tonumber(ref.rank) or 0)
         and (not ref.release or releases.IsOpen(ref.release))
@@ -10551,6 +10924,17 @@ local function clearJob()
     autoQuest.ticketResume=nil;questRuntime.modeRequest=nil;state.autoLeaving=nil;api.enterAt=nil;api.exitAt=nil
     persist()
 end
+local function resumeWithPartialTickets(job,stock,capacity)
+    if not job or job.bucket~="TicketFarm" or not stock or not capacity or stock>=capacity
+        or autoQuest.resetPending or not state.questReset or not state.questReset.canAffordReset
+        or not state.questReset.canAffordReset(stock) then return false end
+    autoQuest.ticketRefillPartial=true
+    state.questReset.shortage=false
+    -- clearJob waits for the configured return team before releasing Trial ownership.
+    if clearJob()==false then return true end
+    message(tr("Trial encerrada: usando os Tickets coletados nas missões.","Trial ended: using collected Tickets for quests.","Trial finalizada: usando los Tickets obtenidos en misiones."))
+    return true
+end
 function state.recurringEntryGuard(job,inside)
     if not policy.enabled(autoQuest) or not policy.validJourney(job) then return false,tr("Missões periódicas pausadas.","Recurring quests paused.","Misiones periódicas pausadas.") end
     if inside then return false,tr("Missão em andamento.","Quest run in progress.","Misión en curso.") end
@@ -10574,18 +10958,88 @@ local function modeKey(mode)
     end
     return ""
 end
+function state.questFixedIslandOptions()
+    local result={}
+    local rank=tonumber(clientData.Get("Rank")) or 0
+    for id,info in pairs(mapInfo) do
+        local world=type(info)=="table" and tonumber(info.World)
+        local required=({0,7,20})[world or 0]
+        if type(id)=="string" and required and rank>=required and (not info.Release or releases.IsOpen(info.Release)) then
+            result[#result+1]={id=id,world=world,order=tonumber(info.Order) or 9999,name=tostring(info.Name or id).." · "..world}
+        end
+    end
+    table.sort(result,function(a,b) if a.world~=b.world then return a.world<b.world end;if a.order~=b.order then return a.order<b.order end;return a.name<b.name end)
+    return result
+end
+function state.fixedFarmAnchor(id)
+    if tonumber(storage:GetAttribute("World"))==3 and (id=="FateWorld" or tostring(id)=="28") then
+        -- User-selected standing point on Grail Dominion's upper bridge.
+        return Vector3.new(3191.45263671875,75.14868927001953,-3104.767822265625)
+    end
+end
+function state.questIslandCenter(id,info,fallback)
+    local fixed=state.fixedFarmAnchor(id)
+    if fixed then return fixed-Vector3.new(0,4,0) end -- Caller adds the standing offset.
+    api.islandCenters=api.islandCenters or {}
+    local key=tostring(info.World)..":"..id
+    local saved=api.islandCenters[key]
+    if saved then return saved end
+    local minX,maxX,minZ,maxZ,totalY,count
+    totalY,count=0,0
+    local folder=enemyFolder()
+    for _,enemy in ipairs(folder and folder:GetChildren() or {}) do
+        local map=enemy:GetAttribute("MapId")
+        if enemy:IsA("BasePart") and (map==id or tostring(map)==tostring(info.Order)) then
+            local p=enemy.Position
+            minX=minX and math.min(minX,p.X) or p.X;maxX=maxX and math.max(maxX,p.X) or p.X
+            minZ=minZ and math.min(minZ,p.Z) or p.Z;maxZ=maxZ and math.max(maxZ,p.Z) or p.Z
+            totalY+=p.Y;count+=1
+        end
+    end
+    if count>=2 then
+        local center=Vector3.new((minX+maxX)/2,totalY/count,(minZ+maxZ)/2)
+        api.islandCenters[key]=center
+        return center
+    end
+    local main=workspace:FindFirstChild("__Main")
+    local world=main and main:FindFirstChild("__World")
+    local model=world and world:FindFirstChild("World "..tostring(info.Order))
+    if model and model:IsA("Model") then
+        local ok,cf=pcall(model.GetBoundingBox,model)
+        if ok and cf then return Vector3.new(cf.Position.X,fallback.Y,cf.Position.Z) end
+    end
+    return fallback
+end
 local function farm(group)
     local root=rootPart()
     local spawns=workspace:FindFirstChild("__Extra")
     spawns=spawns and spawns:FindFirstChild("__Spawns")
     local world=tonumber(storage:GetAttribute("World"))
     if not root or not spawns or not world then return false end
+    local fixed=autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest) and autoQuest.fixedIslandEnabled and autoQuest.fixedIsland
+    if autoQuest.fixedIslandEnabled and autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest) then
+        local info=fixed and mapInfo[fixed]
+        if not info or info.Release and not releases.IsOpen(info.Release) then
+            message(tr("Ilha fixa: selecione uma ilha disponível.","Fixed island: select an available island.","Isla fija: elige una isla disponible."));return true
+        end
+        if tonumber(info.World)~=world then
+            local needRank=({0,7,20})[tonumber(info.World) or 0]
+            if not needRank or (tonumber(clientData.Get("Rank")) or 0)<needRank then message(tr("Ilha fixa: mundo ainda bloqueado pelo rank.","Fixed island: world is still rank locked.","Isla fija: mundo bloqueado por rango."));return true end
+            if not autoExecute then message(tr("Ilha fixa: ative Auto Execute para trocar de mundo.","Fixed island: enable Auto Execute to change worlds.","Isla fija: activa Auto Execute para cambiar de mundo."));return true end
+            if os.clock()>=(api.fixedWorldAt or 0) then
+                api.fixedWorldAt=os.clock()+20
+                if persist() then general:Fire({Event="WorldTeleport",World="World"..info.World}) end
+            end
+            message(tr("Ilha fixa: viajando para ","Fixed island: traveling to ","Isla fija: viajando a ")..tostring(info.Name or fixed));return true
+        end
+    end
     local selected,position,distance
     for id,info in pairs(mapInfo) do
+        if fixed and id~=fixed then continue end
         local spawn=info.World==world and spawns:FindFirstChild(id)
         if spawn and (not info.Release or releases.IsOpen(info.Release)) then
             local point=spawn:GetPivot().Position
-            if autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest) then
+            if not fixed and autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest) then
                 api.islandWait=api.islandWait or {}
                 if os.clock()<(api.islandWait[id] or 0) then continue end
 
@@ -10594,7 +11048,11 @@ local function farm(group)
             if not distance or d<distance then selected,position,distance={id=id,info=info},point,d end
         end
     end
-    if not selected then api.islandWait={};return false end
+    if not selected then
+        api.islandWait={}
+        if fixed then message(tr("Ilha fixa: aguardando o ponto da ilha carregar.","Fixed island: waiting for the island spawn to load.","Isla fija: esperando que cargue la isla."));return true end
+        return false
+    end
     local farmKey=group.activity..":"..selected.id
     if api.farmKey~=farmKey then
         api.farmKey=farmKey;state.target,state.map,state.searchPosition=nil,nil,nil;generation+=1
@@ -10621,9 +11079,13 @@ local function farm(group)
         end
     end
     questRuntime.combat=true
+    local centered=autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest)
+    if centered then
+        questRuntime.destination=state.questIslandCenter(selected.id,selected.info,position)+Vector3.new(0,4,0)
+    end
     if not nearest(enemyFolder(),root.Position,nil,filter) then
-        questRuntime.destination=position+Vector3.new(0,4,0)
-        if autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest) then
+        if not centered then questRuntime.destination=position+Vector3.new(0,4,0) end
+        if not fixed and autoQuest.splitQuests and state.limitBreaker.enabled(autoQuest) then
             if api.scanIsland~=selected.id then api.scanIsland=selected.id;api.scanAt=os.clock() end
             if os.clock()-(api.scanAt or 0)>=3 then api.islandWait[selected.id]=os.clock()+12;api.scanIsland=nil end
         end
@@ -10669,6 +11131,9 @@ function state.recurringQuestStep()
         end
     end
     local job=autoQuest.journey
+    if state.limitBreakerPortalEnabled() and job and job.bucket~="TicketFarm" then
+        clearJob();job=autoQuest.journey
+    end
     if firstStage and job and job.bucket and job.bucket~="TicketFarm" then
         local action=policy.action(job.goal)
         local superseded=action and policy.stage(action)>firstStage
@@ -10690,7 +11155,12 @@ function state.recurringQuestStep()
         end
     end
     local stock,capacity=state.questTicketStock()
-    local refill=(not autoQuest.splitQuests or autoQuest.resetQuests==true and state.questReset and state.questReset.shortage==true) and (not state.questProfiles or state.questProfiles.refill(autoQuest)) and stock~=nil and (stock<=0 or state.questReset and state.questReset.shortage==true) and (not capacity or stock<capacity)
+    if job and job.bucket=="TicketFarm" and job.phase=="inside" and not insideDungeon()
+        and not (state.refillTeams and state.refillTeams.needsRestart and state.refillTeams.needsRestart(job))
+        and resumeWithPartialTickets(job,stock,capacity) then return true end
+    local ticketShortage=state.questReset and (state.questReset.shortage==true or state.questReset.ticketShortage and state.questReset.ticketShortage(stock))
+    local spendingPartial=autoQuest.ticketRefillPartial and state.questReset and state.questReset.canAffordReset and state.questReset.canAffordReset(stock)
+    local refill=not spendingPartial and (not autoQuest.splitQuests or autoQuest.resetQuests==true and ticketShortage) and (not state.questProfiles or state.questProfiles.refill(autoQuest)) and stock~=nil and (stock<=0 or ticketShortage) and (not capacity or stock<capacity)
     if refill and (not job or job.bucket~="TicketFarm") then
         api.demands={};api.hasModePending=true
         if not capacity then message("Auto Quest: aguardando capacidade nativa de Tickets para a Trial.");return true end
@@ -10699,14 +11169,33 @@ function state.recurringQuestStep()
             if os.clock()>=(api.exitAt or 0) then api.exitAt=os.clock()+8;state.requestDungeonExit() end
             message("Auto Quest: retornando para repor Tickets na Trial.");return true
         end
+        autoQuest.ticketRefillPartial=nil
         autoQuest.ticketResume=job
         local refillConfig=autoQuest.refillConfig or {}
         autoQuest.journey={bucket="TicketFarm",id="tickets",definitionId="TicketFarm",goal="TicketFull",mode="trial",name="Tickets",key="",difficulty=refillConfig.difficulty or "Easy",farmTeam=refillConfig.farmTeam,returnTeam=refillConfig.returnTeam,phase="entry",beforeProgress=stock}
         if not persist() then autoQuest.journey=job;autoQuest.ticketResume=nil;message("Auto Quest: falha ao salvar a reposição de Tickets.");return true end
         job=autoQuest.journey;api.enterAt=nil;api.exitAt=nil
     end
+    if not job and state.limitBreakerPortalEnabled() and not insideDungeon() then state.autoLeaving=nil end
+    if not job and state.limitBreakerPortalRequested() then
+        api.demands={};api.hasModePending=false
+        questRuntime.filter=nil;questRuntime.destination=nil;questRuntime.modeRequest=nil
+        questRuntime.combat=state.limitBreakerPortalOwnsRun()
+        if insideDungeon() and not questRuntime.combat then
+            state.autoLeaving=true
+            if os.clock()>=(api.exitAt or 0) then api.exitAt=os.clock()+8;state.requestDungeonExit() end
+            message(tr("Limit Breaker: retornando para o Portal selecionado.","Limit Breaker: returning to the selected Portal.","Limit Breaker: regresando al Portal seleccionado."));return true
+        end
+        if #claims>0 and os.clock()>=api.claimAt then
+            api.claimAt=os.clock()+8
+            local claim=claims[1];general:Fire({Event="ClaimQuest",Type=claim.bucket,Id=claim.id})
+        end
+        message(tr("Limit Breaker: farm pelo Auto Dungeon · Portal. Reposição na Trial quando faltarem Tickets.","Limit Breaker: farming through Auto Dungeon · Portal. Trial refill when Tickets are insufficient.","Limit Breaker: farmeando con Auto Dungeon · Portal. Trial cuando falten Tickets."))
+        return true
+    end
     if job and job.bucket then
         if not policy.validJourney(job) then clearJob();return false end
+        if job.bucket=="TicketFarm" and state.refillTeams and state.refillTeams.sync and not state.refillTeams.sync(job) then message(state.refillTeams.status);return true end
         local record,loaded=jobRecord(job)
         if not loaded then message(tr("Auto Quest: aguardando progresso.","Auto Quest: waiting for progress.","Auto Quest: esperando progreso."));return true end
         local inside=insideDungeon()
@@ -10720,16 +11209,28 @@ function state.recurringQuestStep()
             end
             if job.phase~="inside" then job.phase="inside";persist() end
             questRuntime.modeRequest=nil
+            if job.bucket=="TicketFarm" and pendingGoal(job,record) and state.refillTeams then
+                if state.refillTeams.needsRestart and state.refillTeams.needsRestart(job) then
+                    state.autoLeaving=true
+                    if os.clock()>=(api.exitAt or 0) then api.exitAt=os.clock()+8;state.requestDungeonExit() end
+                    message(tr("Trial: retornando para aplicar a dificuldade ","Trial: returning to apply difficulty ","Trial: regresando para aplicar la dificultad ")..job.difficulty);return true
+                end
+                if not state.refillTeams.prepare(job) then message(state.refillTeams.status);return true end
+            end
             local action=job.bucket=="TicketFarm" and {partial=true} or policy.action(job.goal)
             local done=storage:GetAttribute("DungeonCompleted")==true or state.finishedMode==job.mode
-            if done or action.partial and not pendingGoal(job,record) then
+            local refillEnded=job.bucket=="TicketFarm" and state.questTrialRefillEnded()
+            local fillingTickets=job.bucket=="TicketFarm" and pendingGoal(job,record) and not refillEnded
+            if fillingTickets then state.autoLeaving=nil end
+            if refillEnded or done and not fillingTickets or action.partial and not pendingGoal(job,record) then
                 -- Finite modes finish normally; wave/floor objectives can return once their active target is met.
                 state.autoLeaving=true
                 if os.clock()>=(api.exitAt or 0) then
                     api.exitAt=os.clock()+8
                     if not done or not state.nativeExitAfterRun or not state.nativeExitAfterRun(job.mode) then state.requestDungeonExit() end
                 end
-                message(tr("Auto Quest: retornando para conferir as missões.","Auto Quest: returning to check quests.","Auto Quest: regresando para comprobar misiones."))
+                message(refillEnded and tr("Limit Breaker: Trial encerrada; saindo para usar os Tickets coletados.","Limit Breaker: Trial ended; leaving to use collected Tickets.","Limit Breaker: Trial finalizada; saliendo para usar los Tickets obtenidos.")
+                    or tr("Auto Quest: retornando para conferir as missões.","Auto Quest: returning to check quests.","Auto Quest: regresando para comprobar misiones."))
             else
                 local progress=record and record.Progress and record.Progress[job.goal]
                 local current=progress and tonumber(progress.Current) or job.beforeProgress or 0
@@ -10764,7 +11265,10 @@ function state.recurringQuestStep()
         loadNative()
         local mode=dungeonMode({mode=job.mode})
         local native=nativeModes[job.mode] or (mode.keys and nativeModes.key)
-        if not nativeOK or not native or nativeSchedule(native,workspace:GetServerTimeNow()).Open~=true then message("Auto Quest: aguardando abrir "..job.mode.."; não entrarei em outro modo.");return true end
+        if not nativeOK or not native or nativeSchedule(native,workspace:GetServerTimeNow()).Open~=true then
+            if nativeOK and native and job.bucket=="TicketFarm" and resumeWithPartialTickets(job,stock,capacity) then return true end
+            message("Auto Quest: aguardando abrir "..job.mode.."; não entrarei em outro modo.");return true
+        end
         local party=partyClient.GetRoom(mode.event)
         if party and not job.partyRequested then message("Auto Quest: existe um grupo anterior; saia dele para iniciar "..job.mode..".");return true end
         questRuntime.modeRequest=requestFor(job)
@@ -10828,7 +11332,7 @@ function state.recurringQuestStep()
     return firstStage~=nil or autoQuest.scope=="recurring"
 end
 end
--- Native Teams equip receipt; no key simulation and no changes to manual Dungeon preferences.
+-- Native team keybind receipts; manual Dungeon preferences remain independent.
 do
 local api={status=""};state.refillTeams=api
 local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.language=="ES" and es or en end
@@ -10848,6 +11352,67 @@ end
 function api.owns()
     return autoQuest.refillTeamPending~=nil or autoQuest.journey and autoQuest.journey.bucket=="TicketFarm"
 end
+function api.isEquipped(id,team)
+    local named=tostring(player:GetAttribute("TeamWorn"))==id
+    -- TeamWorn can be absent after teleport; the native UI also checks actual equipment.
+    local equipped=clientData.Get("Equips")
+    local inventory=clientData.Get("Inventory")
+    if type(equipped)~="table" or type(inventory)~="table" or type(team.Pets)~="table" or type(equipped.Pets)~="table" then return named end
+    local extra=require(shared.ExtraFunctions)
+    local maximum=tonumber(extra.GetMaxPets(player))
+    if not maximum or maximum<=0 then return false end
+    local function sameSet(expected,actual)
+        local a,b={},{}
+        for key,value in pairs(expected) do if type(value)=="string" then a[value]=true elseif value==true then a[key]=true end end
+        for key,value in pairs(actual) do if type(value)=="string" then b[value]=true elseif value==true then b[key]=true end end
+        for uid in pairs(a) do if not b[uid] then return false end end
+        for uid in pairs(b) do if not a[uid] then return false end end
+        return true
+    end
+    local pets={}
+    if type(inventory.Pets)~="table" then return false end
+    for _,uid in ipairs(team.Pets) do if #pets<maximum and inventory.Pets[uid] then pets[#pets+1]=uid end end
+    if not sameSet(pets,equipped.Pets) then return false end
+    if type(team.Relics)=="table" and #team.Relics>0 then
+        if type(inventory.Relics)~="table" or type(equipped.Relics)~="table" then return false end
+        local limit=tonumber(extra.GetMaxRelics(player));if not limit or limit<=0 then return false end
+        local relics,seen={},{}
+        for _,uid in ipairs(team.Relics) do
+            local item=inventory.Relics[uid]
+            local kind=type(item)=="table" and item.Name or uid
+            if item and #relics<limit and not seen[kind] then relics[#relics+1]=uid;seen[kind]=true end
+        end
+        if not sameSet(relics,equipped.Relics) then return false end
+    end
+    for slot,field in pairs({Main="Weapon",Dual="DualWeapon",Third="ThirdWeapon"}) do
+        local uid=team.Weapons and team.Weapons[slot]
+        if uid and equipped[field]~=uid then return false end
+    end
+    for slot,field in pairs({Main="Title",Dual="DualTitle"}) do
+        local title=team.Titles and team.Titles[slot]
+        if title and equipped[field]~=title then return false end
+    end
+    for slot,uid in pairs(team.Acessorys or {}) do if uid~=false and (equipped.Acessorys or {})[slot]~=uid then return false end end
+    if type(team.Talents)=="string" and clientData.Get("Passes","DualTalents")==true and equipped.Talents~=team.Talents then return false end
+    return true
+end
+function api.sync(job)
+    local config=autoQuest.refillConfig or {}
+    local difficulty=config.difficulty or "Easy"
+    if job.difficulty==difficulty and job.farmTeam==config.farmTeam and job.returnTeam==config.returnTeam then return true end
+    local old={difficulty=job.difficulty,farmTeam=job.farmTeam,returnTeam=job.returnTeam}
+    job.difficulty=difficulty;job.farmTeam=config.farmTeam;job.returnTeam=config.returnTeam
+    if not save() then
+        job.difficulty=old.difficulty;job.farmTeam=old.farmTeam;job.returnTeam=old.returnTeam
+        api.status=tr("Falha ao salvar opções atualizadas da Trial.","Could not save updated Trial options.","No se pudieron guardar las opciones actualizadas de Trial.");return false
+    end
+    return true
+end
+function api.needsRestart(job)
+    if not insideDungeon() then return false end
+    local actual=storage:GetAttribute("TimeTrialDifficulty")
+    return type(actual)=="string" and actual~=((autoQuest.refillConfig or {}).difficulty or job.difficulty)
+end
 function api.equip(id,phase)
     if not id or id=="" then
         local previous=autoQuest.refillTeamPending
@@ -10858,9 +11423,16 @@ function api.equip(id,phase)
     if type(teams)~="table" or type(teams[id])~="table" then api.status=tr("Reposição: time selecionado não existe mais. Escolha outro.","Refill: selected team no longer exists. Choose another.","Reposición: el equipo elegido ya no existe. Elige otro.");return false end
     local pending=autoQuest.refillTeamPending
     if pending and (pending.id~=id or pending.phase~=phase) then
-        api.status=tr("Reposição: aguardando a troca de time anterior.","Refill: waiting for the previous team switch.","Reposición: esperando el cambio de equipo anterior.");return false
+        -- No overlapping key presses; an old unconfirmed request can be superseded
+        -- after its replication window instead of deadlocking a new selection.
+        if workspace:GetServerTimeNow()-(pending.at or 0)<8 then
+            api.status=tr("Reposição: aguardando a troca de time anterior.","Refill: waiting for the previous team switch.","Reposición: esperando el cambio de equipo anterior.");return false
+        end
+        local old=pending;autoQuest.refillTeamPending=nil
+        if not save() then autoQuest.refillTeamPending=old;return false end
+        pending=nil
     end
-    if tostring(player:GetAttribute("TeamWorn"))==id then
+    if api.isEquipped(id,teams[id]) then
         if pending then
             autoQuest.refillTeamPending=nil
             if not save() then autoQuest.refillTeamPending=pending;api.status=tr("Falha ao salvar a confirmação do time.","Could not save team confirmation.","Error al guardar la confirmación del equipo.");return false end
@@ -10868,21 +11440,37 @@ function api.equip(id,phase)
         api.status="";return true
     end
     local now=workspace:GetServerTimeNow()
-    if state.panic or state.stopped or player.GameplayPaused or state.rebirthing or Input:GetFocusedTextBox() then return false end
+    if state.panic or state.stopped or player.GameplayPaused or state.rebirthing or player:GetAttribute("KeyChanging")==true or Input:GetFocusedTextBox() then
+        api.status=tr("Reposição: aguardando carregamento, renascimento ou fim da digitação para apertar a tecla.","Refill: waiting for loading, rebirth or text input to finish before pressing the key.","Reposición: esperando carga, renacimiento o fin de escritura antes de pulsar la tecla.");return false
+    end
     if pending and now-(pending.at or now)<8 then
         api.status=tr("Reposição: aguardando confirmar time ","Refill: waiting to confirm team ","Reposición: esperando confirmar equipo ")..tostring(teams[id].Name or id);return false
     end
     if pending and (pending.attempts or 0)>=3 then
         api.status=tr("Reposição: time não confirmado após 3 tentativas; revise a seleção.","Refill: team unconfirmed after 3 attempts; review selection.","Reposición: equipo sin confirmar tras 3 intentos; revisa la selección.");return false
     end
+    local key=teams[id].Key and tostring(teams[id].Key) or ""
+    if not (state.teamSwitchKeys and state.teamSwitchKeys[key]) then
+        local native
+        for name,label in pairs(state.teamSwitchKeys or {}) do if label==key then native=name;break end end
+        key=native
+    end
+    if not key or not state.sendTeamSwitchKey then
+        api.status=tr("Reposição: o time selecionado não possui uma keybind numérica válida.","Refill: selected team has no valid numeric keybind.","Reposición: el equipo seleccionado no tiene una tecla numérica válida.");return false
+    end
     local receipt={id=id,phase=phase,at=now,attempts=(pending and pending.attempts or 0)+1}
     autoQuest.refillTeamPending=receipt
     if not save() then autoQuest.refillTeamPending=pending;api.status=tr("Falha ao salvar troca de time; nenhum pedido enviado.","Could not save team switch; no request sent.","Error al guardar el cambio de equipo; no se envió solicitud.");return false end
-    general:Fire({Event="Teams",Action="Equip",TeamId=id})
+    local ok,problem=state.sendTeamSwitchKey(key)
+    if not ok then
+        api.status=tr("Reposição: falha ao apertar a tecla do time: ","Refill: could not press team key: ","Reposición: no se pudo pulsar la tecla del equipo: ")..tostring(problem)
+        return false
+    end
     api.status=tr("Reposição: solicitando time ","Refill: requesting team ","Reposición: solicitando equipo ")..tostring(teams[id].Name or id)
     return false
 end
 function api.prepare(job)
+    if not api.sync(job) then return false end
     local valid=false
     for _,option in ipairs(trialDifficulties) do if option.id==job.difficulty then valid=true end end
     if not valid then api.status=tr("Reposição: dificuldade da Trial indisponível. Escolha outra.","Refill: Trial difficulty unavailable. Choose another.","Reposición: dificultad de Trial no disponible. Elige otra.");return false end
@@ -10894,6 +11482,7 @@ function api.prepare(job)
 end
 function api.finish(job)
     if insideDungeon() then return false end
+    if not api.sync(job) then return false end
     local pending=autoQuest.refillTeamPending
     -- A cancelled entry still reconciles the last native equip request first.
     if pending and pending.phase=="farm" then
@@ -10907,7 +11496,7 @@ function api.change(key,value)
     local config=table.clone(old or {});config[key]=value~="" and value or nil
     autoQuest.refillConfig=config
     local job=autoQuest.journey
-    if job and job.bucket=="TicketFarm" and not insideDungeon() then
+    if job and job.bucket=="TicketFarm" then
         local pending=autoQuest.refillTeamPending
         local teams=clientData.Get("Teams")
         local missing=pending and type(teams)=="table" and not teams[pending.id]
@@ -11013,6 +11602,7 @@ function state.limitBreaker.change(mutator)
         for key,value in pairs(old) do autoQuest[key]=value end
         api.problem="Falha ao salvar as opções do Limit Breaker.";return false
     end
+    api.problem=nil
     questRuntime.modeRequest=nil;questRuntime.combat=false;state.target=nil
     if state.recurringQuests then state.recurringQuests.demands={} end
     if api.refresh then api.refresh() end
@@ -12075,17 +12665,10 @@ function state.craftSalePending(uid)
     return run and run.pending and run.pending[uid]~=nil
 end
 function state.craftBuyBusy(resources)
-    if state.questReset and state.questReset.pending and resources.Ticket~=nil then return true end
-    local lookup=state.buyUI and state.buyUI.view and state.buyUI.view.lookup
-    local function matches(receipt)
-        local entry=lookup and receipt and lookup[receipt.key]
-        if not entry then return receipt and resources.Ticket~=nil end
-        local item=entry.item
-        return resources[item.PriceType]~=nil or item.Kind=="Item" and resources[item.Real]~=nil
-    end
-    if matches(autoBuy and autoBuy.pending) then return true end
-    for _,receipt in pairs(autoBuy and autoBuy.unconfirmed or {}) do if matches(receipt) then return true end end
-    return false
+    -- Sell/Buy owns its receipts internally. They must not reserve currencies
+    -- against Craft or quest resets, even if an old purchase is unconfirmed.
+    -- Keep the actual quest-reset transaction separate from those reservations.
+    return state.questReset~=nil and state.questReset.pending~=nil and resources.Ticket~=nil
 end
 function state.craftItemBusy(item)
     local resources={[item.PriceType]=true}
@@ -12928,6 +13511,55 @@ function api.includes(bucket)
     local scope=autoQuest.resetScope or "both"
     return scope=="daily" and bucket=="Daily" or scope=="weekly" and bucket=="Weekly" or scope~="daily" and scope~="weekly"
 end
+function api.ticketShortage(stock)
+    if not autoQuest.resetQuests or autoQuest.resetPending or autoQuest.splitQuests and not autoQuest.limitBreakerEnabled then return false end
+    if type(stock)~="number" then return false end
+    if autoQuest.ticketRefillPartial and api.canAffordReset(stock) then return false end
+    local ok,definitions,products=pcall(function() return require(storage.Indexer.QuestsInfo),require(storage.Indexer.ProductInfo).Products end)
+    if not ok then return false end
+    for _,bucket in ipairs({"Daily","Weekly"}) do
+        if not api.includes(bucket) then continue end
+        local selected=not autoQuest.splitQuests or not state.limitBreaker
+        if not selected then
+            for id,definition in pairs(definitions[bucket] or {}) do
+                if not definition.DontShow and state.limitBreaker.selected(autoQuest,bucket,id) then selected=true;break end
+            end
+        end
+        local product=bucket=="Daily" and "DailyQuestReset" or "WeeklyQuestReset"
+        local info=products and products[product]
+        local price=info and tonumber(info.Promo==true and info.PromoV or info.Price)
+        local item=clientData.Get("Inventory","Items",product.."PRODUCT")
+        local owned=tonumber(type(item)=="table" and item.Amount or item) or 0
+        if selected and owned<=0 and price and price==price and price>0 and price<math.huge and stock<price then return true end
+    end
+    return false
+end
+-- After an interrupted refill, spend the collected Tickets before returning to Trial.
+-- Daily and Weekly are independent: an affordable Daily reset can still proceed
+-- while the current balance is below the Weekly price.
+function api.canAffordReset(stock)
+    if type(stock)~="number" or not autoQuest.resetQuests then return false end
+    local ok,definitions,products=pcall(function() return require(storage.Indexer.QuestsInfo),require(storage.Indexer.ProductInfo).Products end)
+    if not ok then return false end
+    for _,bucket in ipairs({"Daily","Weekly"}) do
+        if not api.includes(bucket) then continue end
+        local selected=not autoQuest.splitQuests or not state.limitBreaker
+        if not selected then
+            for id,definition in pairs(definitions[bucket] or {}) do
+                if not definition.DontShow and state.limitBreaker.selected(autoQuest,bucket,id) then selected=true;break end
+            end
+        end
+        if selected then
+            local product=bucket=="Daily" and "DailyQuestReset" or "WeeklyQuestReset"
+            local item=clientData.Get("Inventory","Items",product.."PRODUCT")
+            if (tonumber(type(item)=="table" and item.Amount or item) or 0)>0 then return true end
+            local info=products and products[product]
+            local price=info and tonumber(info.Promo==true and info.PromoV or info.Price)
+            if price and price==price and price>0 and price<math.huge and stock>=price then return true end
+        end
+    end
+    return false
+end
 function api.setScope(scope)
     if scope~="daily" and scope~="weekly" and scope~="both" then return false end
     local previous,previousDue=autoQuest.resetScope,autoQuest.resetDue
@@ -13001,7 +13633,7 @@ function api.step(now)
         if board=="loading" or board=="unknown" then api.status=tr("Auto Reset: aguardando sincronização das missões.","Auto Reset: waiting for quest synchronization.","Auto Reset: esperando la sincronización de misiones.");return end
         local signature,total=api.fingerprint(records)
         local used=pending.phase=="use" and pending.useBefore and tickets(pending.product.."PRODUCT")<pending.useBefore
-        local changed=not pending.forced or signature~=pending.beforeSignature or total<(pending.beforeTotal or 0) or used and total==0
+        local changed=signature~=pending.beforeSignature or total<(pending.beforeTotal or 0) or used and total==0
         if board~="empty" and changed then
             if persistPending(nil) then
                 if autoQuest.resetSelectedSeen then autoQuest.resetSelectedSeen[pending.bucket]=nil end
@@ -13014,6 +13646,27 @@ function api.step(now)
             local nextReceipt=table.clone(pending);nextReceipt.phase="use";nextReceipt.useBefore=tickets(pending.product.."PRODUCT")
             if not persistPending(nextReceipt) then return end
             general:Fire({Event="UseItem",Action="Use",Amount=1,Name=pending.product.."PRODUCT"})
+        end
+        if autoQuest.resetQuests and (not autoQuest.splitQuests or autoQuest.limitBreakerEnabled) and now-pending.at>=30 and pending.phase=="buy" and tickets(pending.product.."PRODUCT")==pending.itemBefore then
+            if pending.ticketBefore==nil then
+                local receipt=table.clone(pending);receipt.ticketBefore=tickets("Ticket");receipt.observeAt=now
+                if persistPending(receipt) then api.status=tr("Auto Reset: conferindo saldo e quadro do pedido antigo.","Auto Reset: checking balance and board for the old request.","Auto Reset: comprobando saldo y tablero de la solicitud antigua.") end
+                return
+            end
+            local unchanged=tickets("Ticket")==pending.ticketBefore and signature==pending.beforeSignature and total==(pending.beforeTotal or 0)
+            if unchanged and now-(pending.observeAt or pending.at)>=30 then
+                local attempts=tonumber(pending.attempts) or 1
+                if attempts>=3 then
+                    if persistPending(nil) then api.nextAt=now+30;api.status=tr("Auto Reset: pedido sem efeito; liberando a fila para nova conferência.","Auto Reset: request had no effect; releasing queue for another check.","Auto Reset: solicitud sin efecto; liberando cola para comprobar de nuevo.") end
+                    return
+                end
+                local receipt=table.clone(pending);receipt.at=now;receipt.observeAt=now;receipt.attempts=attempts+1
+                if persistPending(receipt) then
+                    general:Fire({Event="TicketShop",Type="Product",SubType="Products",Name=pending.product})
+                    api.status=tr("Auto Reset: saldo e quadro inalterados; tentando novamente.","Auto Reset: balance and board unchanged; retrying.","Auto Reset: saldo y tablero sin cambios; reintentando.")
+                end
+                return
+            end
         end
         api.status=now-pending.at>=30 and tr("Auto Reset: sem confirmação; cobrança não será repetida. Confira as missões no jogo.","Auto Reset: no confirmation; payment will not be repeated. Check quests in game.","Auto Reset: sin confirmación; no se repetirá el pago. Revisa las misiones en el juego.") or tr("Auto Reset: aguardando as novas missões.","Auto Reset: waiting for new quests.","Auto Reset: esperando nuevas misiones.")
         return
@@ -13032,7 +13685,8 @@ function api.step(now)
         api.interval=interval;autoQuest.resetDue={Daily=now+interval,Weekly=now+interval}
         if not save() then api.status=tr("Auto Reset: falha ao salvar; nenhum pedido novo enviado.","Auto Reset: could not save; no new request sent.","Auto Reset: error al guardar; ninguna solicitud nueva enviada.");return end
     end
-    for _,bucket in ipairs({"Daily","Weekly"}) do
+    local order=autoQuest.resetLastBucket=="Daily" and {"Weekly","Daily"} or {"Daily","Weekly"}
+    for _,bucket in ipairs(order) do
         if not api.includes(bucket) then api.emptyAt[bucket]=nil;continue end
         local status=api.board(clientData.Get("Quests",bucket),definitions[bucket],bucket)
         if status=="claim" then
@@ -13041,20 +13695,24 @@ function api.step(now)
                 api.claimAt[bucket]=now+8;general:Fire({Event="ClaimAllQuests",Type=bucket})
             end
             api.status=tr("Auto Reset: resgatando recompensas de ","Auto Reset: claiming rewards for ","Auto Reset: recogiendo recompensas de ")..bucket;return
-        elseif status=="empty" and interval==0 or interval>0 and (status=="working" or status=="unavailable") and now>=(autoQuest.resetDue[bucket] or now+interval) or interval>0 and status=="empty" and now>=(autoQuest.resetDue[bucket] or now+interval) then
+        elseif (status=="empty" or status=="unavailable") and interval==0 or interval>0 and (status=="working" or status=="unavailable" or status=="empty") and now>=(autoQuest.resetDue[bucket] or now+interval) then
             local since=api.emptyAt[bucket] or now;api.emptyAt[bucket]=since
             if interval==0 and now-since<3 then api.status=tr("Auto Reset: conferindo se todas as recompensas foram resgatadas.","Auto Reset: checking that all rewards were claimed.","Auto Reset: comprobando que se recogieron todas las recompensas.");continue end
             local product=bucket=="Daily" and "DailyQuestReset" or "WeeklyQuestReset"
             local info=products and products[product]
             local price=info and tonumber(info.Promo==true and info.PromoV or info.Price)
             if not price or price<=0 or price~=price or price==math.huge then blockedMessage=tr("Auto Reset: preço nativo indisponível.","Auto Reset: native price unavailable.","Auto Reset: precio nativo no disponible.");continue end
-            if tickets("Ticket")<price then api.shortage=true;blockedMessage=tr("Auto Reset: faltam tickets para ","Auto Reset: insufficient Tickets for ","Auto Reset: faltan Tickets para ")..bucket.." ("..price..").";continue end
-            if state.craftItemBusy and state.craftItemBusy({PriceType="Ticket",Kind="Item",Real=product.."PRODUCT"})
-                or state.craftBuyBusy and state.craftBuyBusy({Ticket=true}) then blockedMessage=tr("Auto Reset: tickets ocupados por outro pedido.","Auto Reset: Tickets reserved by another request.","Auto Reset: Tickets reservados por otra solicitud.");continue end
+            local owned=tickets(product.."PRODUCT")
+            if owned<=0 and tickets("Ticket")<price then api.shortage=true;blockedMessage=tr("Auto Reset: faltam tickets para ","Auto Reset: insufficient Tickets for ","Auto Reset: faltan Tickets para ")..bucket.." ("..price..").";continue end
+            if state.craftItemBusy and state.craftItemBusy({PriceType="Ticket",Kind="Item",Real=product.."PRODUCT"}) then
+                blockedMessage=tr("Auto Reset: aguardando operação de Craft com Tickets.","Auto Reset: waiting for a Craft operation using Tickets.","Auto Reset: esperando una operación de Craft con Tickets.");continue
+            end
             local signature,total=api.fingerprint(clientData.Get("Quests",bucket))
-            local receipt={bucket=bucket,product=product,at=now,phase="buy",itemBefore=tickets(product.."PRODUCT"),price=price,costs={Ticket=price},forced=interval>0,beforeSignature=signature,beforeTotal=total}
-            if not persistPending(receipt) then return end
-            general:Fire({Event="TicketShop",Type="Product",SubType="Products",Name=product})
+            local receipt={bucket=bucket,product=product,at=now,phase=owned>0 and "use" or "buy",itemBefore=owned,useBefore=owned>0 and owned or nil,price=owned>0 and 0 or price,costs=owned>0 and {} or {Ticket=price},forced=interval>0,beforeSignature=signature,beforeTotal=total,ticketBefore=tickets("Ticket"),attempts=1}
+            local previousBucket=autoQuest.resetLastBucket;autoQuest.resetLastBucket=bucket
+            if not persistPending(receipt) then autoQuest.resetLastBucket=previousBucket;return end
+            if owned>0 then general:Fire({Event="UseItem",Action="Use",Amount=1,Name=product.."PRODUCT"})
+            else general:Fire({Event="TicketShop",Type="Product",SubType="Products",Name=product}) end
             api.status=tr("Auto Reset: solicitando ","Auto Reset: requesting ","Auto Reset: solicitando ")..bucket.." ("..price.." Tickets).";return
         else
             api.emptyAt[bucket]=nil
@@ -14189,15 +14847,6 @@ function state.installShadowCraftUI(H)
     state.shadowCraftRefresh=result.refresh
     task.spawn(function()
         while alive and page.Parent do
-            if state.questPriorityActive and state.questPriorityActive() then
-                if not state.recurringQuests.craftPaused then
-                    state.recurringQuests.craftPaused=true
-                    general:Fire({Event="StatsShadow",Action="CancelAutoReroll"})
-                end
-                if state.craftControl then state.craftControl.status="Auto Quest: Craft pausado." end
-                if page.Visible then result.refresh(state.craft.category) end
-                task.wait(0.5);continue
-            end
             if state.recurringQuests then state.recurringQuests.craftPaused=nil end
             if state.craftControllerStep then
                 local ok,problem=pcall(state.craftControllerStep,workspace:GetServerTimeNow())
@@ -14857,7 +15506,7 @@ state.hubParts.craft = function(H)
                     end
                 end
             end
-            if preferenceWrites > 0 or state.questPriorityActive and state.questPriorityActive() or state.panic or state.stopped or not alive or player.GameplayPaused then refresh() return end
+            if preferenceWrites > 0 or state.panic or state.stopped or not alive or player.GameplayPaused then refresh() return end
             if now<nextSend then refresh() return end
             for offset=1,#catalog do
                 local index=(lastRecipe+offset-1)%#catalog+1
@@ -15144,19 +15793,25 @@ state.hubParts.questProfiles=function(H)
     end
     local resetCard=frame("ResetSettings",page,8,350)
     for name,y in pairs({Row_AutoResetQuests=8,Act_QuestResetScope=66,Row_QuestResetInterval=104}) do local c=panel[name];c.Parent=resetCard;c.Position=UDim2.fromOffset(name=="Act_QuestResetScope" and 44 or 8,y) end
+    local resetDefaultCaption=resetCard.Row_AutoResetQuests.Caption.Text
     local refill=resetCard.Row_AutoResetQuests:Clone();refill.Name="Row_TicketRefill";refill.Position=UDim2.fromOffset(8,154);refill.Parent=resetCard
     local difficulty=button("RefillDifficulty",resetCard,212)
     local farmTeam=button("RefillFarmTeam",resetCard,254)
     local returnTeam=button("RefillReturnTeam",resetCard,296)
+    local function setRefill(key,id)
+        local ok,problem=pcall(state.refillTeams.change,key,id)
+        if not ok then state.refillTeams.status=tr("Falha ao alterar opção da Trial: ","Could not change Trial option: ","No se pudo cambiar la opción de Trial: ")..tostring(problem) end
+        if api.refresh then api.refresh() end
+    end
     connectUI(difficulty,function()
         local options={}
         for _,entry in ipairs(trialDifficulties) do options[#options+1]={id=entry.id,name=entry.name,selected=(autoQuest.refillConfig and autoQuest.refillConfig.difficulty or "Easy")==entry.id} end
-        choose(tr("Dificuldade da Trial","Trial difficulty","Dificultad de Trial"),options,function(id) state.refillTeams.change("difficulty",id);if api.refresh then api.refresh() end end)
+        choose(tr("Dificuldade da Trial","Trial difficulty","Dificultad de Trial"),options,function(id) setRefill("difficulty",id) end)
     end)
     local function chooseTeam(key)
         local options={{id="",name=tr("Não trocar time","Do not switch team","No cambiar equipo"),selected=not (autoQuest.refillConfig and autoQuest.refillConfig[key])}}
         for _,entry in ipairs(state.refillTeams.catalog()) do options[#options+1]={id=entry.id,name=entry.name,selected=autoQuest.refillConfig and autoQuest.refillConfig[key]==entry.id} end
-        choose(key=="farmTeam" and tr("Time para a Trial","Trial farming team","Equipo para Trial") or tr("Time ao terminar","Team after farming","Equipo al terminar"),options,function(id) state.refillTeams.change(key,id);if api.refresh then api.refresh() end end)
+        choose(key=="farmTeam" and tr("Time para a Trial","Trial farming team","Equipo para Trial") or tr("Time ao terminar","Team after farming","Equipo al terminar"),options,function(id) setRefill(key,id) end)
     end
     connectUI(farmTeam,function() chooseTeam("farmTeam") end)
     connectUI(returnTeam,function() chooseTeam("returnTeam") end)
@@ -15169,9 +15824,25 @@ state.hubParts.questProfiles=function(H)
     open.Position=UDim2.fromOffset(44,bottom+48);open.Size=UDim2.new(1,-60,0,30)
     local missionCard=frame("MissionSettings",page,370,146)
     local daily=button("Daily",missionCard,8);local weekly=button("Weekly",missionCard,50);local strategy=button("Strategy",missionCard,92)
-    local activity=frame("QuestStatus",page,528,148)
+    local fixedCard=frame("FixedIslandSettings",page,528,104)
+    local fixedRow=refill:Clone();fixedRow.Name="Row_FixedIsland";fixedRow.Position=UDim2.fromOffset(8,4);fixedRow.Parent=fixedCard
+    local fixedButton=button("FixedIsland",fixedCard,66)
+    local function chooseFixedIsland()
+        local options={}
+        for _,island in ipairs(state.questFixedIslandOptions()) do options[#options+1]={id=island.id,name=island.name,selected=autoQuest.fixedIsland==island.id} end
+        choose(tr("Ilha fixa","Fixed island","Isla fija"),options,function(id)
+            lb.change(function(q) q.fixedIsland=id end)
+            if state.recurringQuests then state.recurringQuests.islandWait={};state.recurringQuests.scanIsland=nil;state.recurringQuests.fixedWorldAt=nil end
+        end)
+    end
+    connectUI(fixedButton,chooseFixedIsland)
+    connectUI(fixedRow.Toggle,function()
+        local ok=lb.change(function(q) q.fixedIslandEnabled=not q.fixedIslandEnabled end)
+        if ok and autoQuest.fixedIslandEnabled and not autoQuest.fixedIsland then chooseFixedIsland() end
+    end)
+    local activity=frame("QuestStatus",page,644,148)
     local status=make("TextLabel",{Name="Status",Size=UDim2.new(1,-24,1,-16),Position=UDim2.fromOffset(12,8),BackgroundTransparency=1,Text="",TextColor3=colors.text,Font=Enum.Font.GothamMedium,TextSize=12,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top},activity)
-    page.CanvasSize=UDim2.fromOffset(0,690)
+    page.CanvasSize=UDim2.fromOffset(0,806)
     local listPage=page:Clone();listPage.Name="LimitBreakerMissions"
     for _,child in ipairs(listPage:GetChildren()) do child:Destroy() end
     listPage.Visible=false;listPage.Parent=hub.pages
@@ -15206,13 +15877,21 @@ state.hubParts.questProfiles=function(H)
             make("TextLabel",{Name="Objective",Size=UDim2.new(1,-100,0,16),Position=UDim2.fromOffset(82,29),Text=lb.objective(definitions[entry.id] or {},uiState.language),TextColor3=colors.muted,BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},f)
             make("TextLabel",{Name="Progress",Size=UDim2.new(1,-100,0,20),Position=UDim2.fromOffset(82,47),Text=note,TextColor3=record and colors.accent or colors.muted,BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true},f)
             local toggle=row.Toggle:Clone();toggle.Name="Enabled";toggle.Position=UDim2.new(1,-48,0,8);toggle.Parent=f;H.paint(toggle,lb.selected(autoQuest,bucket,entry.id))
-            connectUI(toggle,function()
-                lb.change(function(q)
+            local hit=make("TextButton",{Name="EnabledHitTarget",Size=UDim2.fromOffset(48,48),Position=UDim2.new(1,-54,0,0),Text="",BackgroundTransparency=1,AutoButtonColor=false,ZIndex=toggle.ZIndex+2,Active=true,Selectable=true},f)
+            local function toggleSelected()
+                local ok=lb.change(function(q)
                     q.missionSelection=q.missionSelection or {};q.missionSelection[bucket]=q.missionSelection[bucket] or {}
                     q.missionSelection[bucket][entry.id]=not lb.selected(q,bucket,entry.id)
                     q.resetSelectedSeen=q.resetSelectedSeen or {};q.resetSelectedSeen[bucket]=nil
-                end);render()
-            end,nil,rowConnections)
+                end)
+                H.paint(toggle,lb.selected(autoQuest,bucket,entry.id))
+                if not ok and api.refresh then api.refresh() end
+            end
+            connectUI(hit,toggleSelected,nil,rowConnections)
+            -- Keep programmatic control binding while the transparent hit target
+            -- handles mouse/touch once, above the decorative switch.
+            state.uiHandlers[toggle]=toggleSelected
+            toggle.Active=false;toggle.Selectable=false
             local function small(name,text,x)
                 return make("TextButton",{Name=name,Size=UDim2.fromOffset(28,28),Position=UDim2.new(1,x,0,5),Text=text,TextColor3=colors.accent,BackgroundColor3=colors.bg,Font=Enum.Font.GothamBold,TextSize=17,AutoButtonColor=false},f)
             end
@@ -15227,7 +15906,7 @@ state.hubParts.questProfiles=function(H)
                 if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
                 local anchor=f.AbsolutePosition.Y
                 if type(anchor)~="number" then return end
-                drag={id=entry.id,index=index,target=index,startY=input.Position.Y,step=78,bucket=bucket}
+                drag={id=entry.id,index=index,target=index,startY=input.Position.Y,step=78,bucket=bucket,input=input}
                 listPage.ScrollingEnabled=false;f.BackgroundColor3=colors.edge
             end)
         end
@@ -15239,12 +15918,14 @@ state.hubParts.questProfiles=function(H)
     table.insert(connections,Input.InputChanged:Connect(function(input)
         if not drag then return end
         if input.UserInputType~=Enum.UserInputType.MouseMovement and input.UserInputType~=Enum.UserInputType.Touch then return end
+        if input.UserInputType==Enum.UserInputType.Touch and input~=drag.input then return end
         local scale=hub.main:FindFirstChildOfClass("UIScale");local zoom=scale and scale.Scale or 1
         drag.target=math.clamp(drag.index+math.floor((input.Position.Y-drag.startY)/(78*zoom)+0.5),1,#rows)
         for index,f in ipairs(rows) do f.BackgroundColor3=index==drag.target and colors.edge or colors.bg end
     end))
     table.insert(connections,Input.InputEnded:Connect(function(input)
         if not drag or input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
+        if input.UserInputType==Enum.UserInputType.Touch and input~=drag.input then return end
         local finished=drag;drag=nil;listPage.ScrollingEnabled=true;lb.move(finished.bucket,finished.id,finished.target);render()
     end))
     local function showMissions(which) bucket=which;render();state.newHubShow("LimitBreakerMissions",true) end
@@ -15268,6 +15949,11 @@ state.hubParts.questProfiles=function(H)
     end
     api.menu=progression
     local function update()
+        fixedRow.Title.Text=tr("Ilha fixa","Fixed island","Isla fija")
+        fixedRow.Caption.Text=tr("Mobs somente na ilha escolhida.","Mobs only on the selected island.","Enemigos solo en la isla elegida.")
+        H.paint(fixedRow.Toggle,autoQuest.fixedIslandEnabled==true)
+        local island=autoQuest.fixedIsland and mapInfo[autoQuest.fixedIsland]
+        fixedButton.Title.Text=tr("Ilha: ","Island: ","Isla: ")..tostring(island and island.Name or autoQuest.fixedIsland or tr("Selecionar","Select","Elegir")).." >"
         template.Title.Text=tr("Progressão >","Progression >","Progresión >")
         H.paint(panel.Row_AutoQuest.Toggle,autoQuest.progressionEnabled==true)
         row.Title.Text="Limit Breaker";row.Caption.Text=tr("Missões, mobs e resets integrados.","Integrated quests, mobs and resets.","Misiones, mobs y reinicios integrados.")
@@ -15278,6 +15964,8 @@ state.hubParts.questProfiles=function(H)
         refill.Title.Text=tr("Auto Trial · repor Tickets","Auto Trial · refill Tickets","Auto Trial · reponer Tickets")
         refill.Caption.Text=tr("Sem saldo para resets: Trial até encher.","Cannot afford resets: Trial until full.","Sin saldo para reinicios: Trial hasta llenar.")
         H.paint(refill.Toggle,autoQuest.refillTickets~=false)
+        local resetReason=state.automationBlockReason and state.automationBlockReason("AutoResetQuests",autoQuest.resetQuests)
+        resetCard.Row_AutoResetQuests.Caption.Text=resetReason or state.translate(resetDefaultCaption)
         local config=autoQuest.refillConfig or {}
         local teams=clientData.Get("Teams")
         local function teamName(id) return id and type(teams)=="table" and type(teams[id])=="table" and tostring(teams[id].Name or id) or id or tr("Não trocar","Do not switch","No cambiar") end
@@ -16046,8 +16734,10 @@ state.hubParts.dungeonUtilities=function(H)
         H.paint(switch,u.switchTeams)
         for _,side in ipairs({"A","B"}) do state.setLocalizedText(keyLabels[side],state.teamSwitchKeys[u["key"..side]].."  >") end
         local c=state.teamSwitchCycle
+        local blocked=state.automationBlockReason and state.automationBlockReason("SwitchTeams",u.switchTeams)
         if state.teamSwitchError then
             status.Text=state.teamSwitchError
+        elseif blocked then status.Text=blocked
         elseif not u.switchTeams then status.Text=state.utilityText("Troca de equipes desligada.")
         elseif not insideDungeon() then status.Text=state.utilityText("Aguardando entrar em uma dungeon.")
         elseif not c.side or c.paused then status.Text=state.utilityText("Troca de equipes pausada.")
@@ -16120,6 +16810,21 @@ end
 state.hubParts.autoBuy = function(H)
     local hub, CYAN, languageHooks, periodic, shadow, invoke, link, mirror, bindField, orderedChildren, textLabels, mirrorList, clearClones = H.hub, H.CYAN, H.languageHooks, H.periodic, H.shadow, H.invoke, H.link, H.mirror, H.bindField, H.orderedChildren, H.textLabels, H.mirrorList, H.clearClones
 		local section = hub.pages.SellBuy.Section_COMPRA
+        local priorityNotice=make("TextLabel",{Name="BuyPriorityNotice",Size=UDim2.new(1,-24,0,0),
+            AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=colors.edge,BorderSizePixel=0,
+            Text="",TextSize=13,Font=Enum.Font.GothamBold,TextColor3=Color3.fromRGB(255,196,82),TextWrapped=true,
+            TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=1,Visible=false},section)
+        make("UIPadding",{PaddingTop=UDim.new(0,10),PaddingBottom=UDim.new(0,10),
+            PaddingLeft=UDim.new(0,10),PaddingRight=UDim.new(0,10)},priorityNotice)
+        local function refreshPriorityNotice()
+            local message=state.buyPriorityNotice and state.buyPriorityNotice()
+            priorityNotice.Visible=message~=nil
+            if message then state.setLocalizedText(priorityNotice,message) end
+        end
+        state.refreshBuyPriorityNotice=refreshPriorityNotice
+        table.insert(periodic,refreshPriorityNotice)
+        table.insert(languageHooks,refreshPriorityNotice)
+        refreshPriorityNotice()
         local batchBar = make("Frame", {Name = "PurchaseBatch", Size = UDim2.new(1, -16, 0, 72), BackgroundTransparency = 1, LayoutOrder = 7}, section)
         local batchLabel = label("", 8, 0, 16, 26, batchBar, 12)
         local function refreshBatch()
@@ -16175,7 +16880,7 @@ state.hubParts.autoBuy = function(H)
 					local image = node:FindFirstChildOfClass("ImageLabel")
 					card.Icon.Image = image and image.Image or ""
 					if labels[1] then mirror(card.ItemName, labels[1], nil, false, group) end
-					if labels[2] then mirror(card.Caption, labels[2], nil, false, group) end
+					if labels[2] then mirror(card.Caption, labels[2], nil, true, group) end
 					if labels[3] then mirror(card.TargetLabel, labels[3], nil, false, group) end
 					local select = node:FindFirstChild("SelectItem")
 					local key = node.Name
@@ -16538,6 +17243,284 @@ state.hubParts.limitBreak = function(H)
 		end
 		update()
 		table.insert(periodic, update)
+end
+-- One-shot native Index markings. AutoChange toggles, so never blindly retry.
+do
+local api={status="",pending={},at=0};state.shadowIndexDestroy=api
+local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.language=="ES" and es or en end
+local function catalog(wanted)
+    local info=require(storage.Indexer.PetsInfo)
+    local found=clientData.Get("Index","Pets")
+    local markings=clientData.Get("Settings","AutoDestroy")
+    if type(found)~="table" or type(markings)~="table" then error("Index data not loaded") end
+    local ids,locked={},0
+    for id,entry in pairs(info) do
+        if type(id)=="string" and type(entry)=="table" and type(entry.Name)=="string" then
+            -- Native Index permits enabling only discovered types. Existing marks
+            -- can always be removed, including types no longer shown as discovered.
+            if wanted and found[id]~=true and markings[id]~=true then locked+=1
+            else ids[#ids+1]=id end
+        end
+    end
+    table.sort(ids);return ids,locked
+end
+function api.start(wanted)
+    if type(wanted)~="boolean" then return false end
+    local ok,ids,locked=pcall(catalog,wanted)
+    if not ok then api.status=tr("Index: aguardando catálogo e sombras descobertas.","Index: waiting for catalog and discovered shadows.","Index: esperando catálogo y sombras descubiertas.");return false end
+    api.job={wanted=wanted,ids=ids,index=1,total=#ids,confirmed=0,unconfirmed=0,locked=locked}
+    api.status=tr("Index: preparando marcações das sombras...","Index: preparing shadow markings...","Index: preparando marcas de sombras...")
+    return true
+end
+function api.step()
+    if not alive or state.stopped or state.panic or player.GameplayPaused then return end
+    local markings=clientData.Get("Settings","AutoDestroy")
+    if type(markings)~="table" then
+        if api.job then api.status=tr("Index: aguardando configurações de Auto Destroy.","Index: waiting for Auto Destroy settings.","Index: esperando ajustes de Auto Destroy.") end
+        return
+    end
+    local now=os.clock()
+    for id,receipt in pairs(api.pending) do
+        if (markings[id]==true)==receipt.wanted then api.pending[id]=nil end
+    end
+    local job=api.job
+    if not job then return end
+    while job.index<=job.total do
+        local id=job.ids[job.index]
+        local pending=api.pending[id]
+        if pending then
+            if pending.wanted~=job.wanted then
+                if now-pending.at<10 then
+                    api.status=tr("Index: aguardando confirmar a ação anterior antes de inverter.","Index: waiting for the previous action before reversing it.","Index: esperando confirmar la acción anterior antes de invertirla.");return
+                end
+                job.unconfirmed+=1;job.index+=1
+                continue
+            end
+            if now-pending.at<10 then
+                api.status=tr("Index: aguardando confirmação · ","Index: waiting for confirmation · ","Index: esperando confirmación · ")..job.confirmed.."/"..job.total;return
+            end
+            -- Do not send the same toggle again; a late response could invert it.
+            job.unconfirmed+=1;job.index+=1
+        elseif (markings[id]==true)==job.wanted then
+            job.confirmed+=1;job.index+=1
+        else
+            if now<api.at then return end
+            local sent,answer=pcall(function() return general:Fire({Event="AutoChange",Type="AutoDestroy",Name=id}) end)
+            api.at=now+0.3
+            if not sent or answer==false then
+                api.status=tr("Index: pedido não enviado; aguardando.","Index: request not sent; waiting.","Index: solicitud no enviada; esperando.");return
+            end
+            api.pending[id]={wanted=job.wanted,at=now}
+            api.status=tr("Index: aplicando Auto Destroy · ","Index: applying Auto Destroy · ","Index: aplicando Auto Destroy · ")..job.confirmed.."/"..job.total
+            return
+        end
+    end
+    api.job=nil
+    api.status=(job.wanted and tr("Auto Destroy ativado: ","Auto Destroy enabled: ","Auto Destroy activado: ") or tr("Auto Destroy desativado: ","Auto Destroy disabled: ","Auto Destroy desactivado: "))..job.confirmed.."/"..job.total
+    if job.unconfirmed>0 then api.status..=tr(" · Sem confirmação: "," · Unconfirmed: "," · Sin confirmar: ")..job.unconfirmed end
+    if job.locked>0 then api.status..=tr(" · Ainda não descobertas: "," · Not discovered yet: "," · Aún no descubiertas: ")..job.locked end
+end
+task.spawn(function()
+    clientData.WaitForLoaded()
+    while alive do
+        task.wait(0.3)
+        if not alive then break end
+        local ok,problem=pcall(api.step)
+        if not ok then api.status=tr("Index: erro ao aplicar marcações: ","Index: could not apply markings: ","Index: error al aplicar marcas: ")..tostring(problem) end
+    end
+end)
+end
+-- Local visual privacy. Never changes Player.Name, UserId, teams or server data.
+do
+local api={enabled=false,alias=nil,records={},links={},counts={character=0,list=0}}
+state.maskName=api
+local function pattern(text) return (text:gsub("(%W)","%%%1")) end
+function api.replace(text)
+    local result=tostring(text or "")
+    local seen={}
+    for _,name in ipairs({player.Name,player.DisplayName}) do
+        if type(name)=="string" and name~="" and not seen[name] then
+            seen[name]=true
+            result=result:gsub("%f[%w_]"..pattern(name).."%f[^%w_]",api.alias or name)
+        end
+    end
+    return result
+end
+local function link(signal,fn)
+    local connection=signal:Connect(fn);api.links[#api.links+1]=connection;return connection
+end
+local function apply(node,record)
+    if not api.enabled or record.writing then return end
+    local current=node[record.property]
+    if current==record.masked then return end
+    record.original=current
+    local masked=record.property=="DisplayName" and api.alias or api.replace(current)
+    if current==masked then return end
+    record.masked=masked;record.writing=true
+    node[record.property]=masked
+    record.writing=false
+end
+local function watch(node,property,scope)
+    if api.records[node] then return end
+    local record={property=property,scope=scope,original=node[property]}
+    api.records[node]=record
+    -- Late-created native nameplates may already use Humanoid.DisplayName.
+    if property=="Text" and record.original:find(api.alias,1,true) then
+        record.original=record.original:gsub(pattern(api.alias),player.DisplayName)
+        record.masked=node.Text
+    end
+    record.connection=link(node:GetPropertyChangedSignal(property),function() apply(node,record) end)
+    apply(node,record)
+end
+local function listNode(node)
+    if not node:IsA("TextLabel") and not node:IsA("TextButton") then return false end
+    local path=string.lower(node:GetFullName())
+    return path:find("playerlist",1,true)~=nil or path:find("player_list",1,true)~=nil
+        or path:find("leaderboard",1,true)~=nil or path:find("scoreboard",1,true)~=nil
+end
+local function scanList(root)
+    local ok,nodes=pcall(root.GetDescendants,root)
+    if not ok then api.listProblem=true;return end
+    for _,node in ipairs(nodes) do if listNode(node) then pcall(watch,node,"Text","list") end end
+end
+local function characterAdded(character)
+    if api.characterLink then api.characterLink:Disconnect();api.characterLink=nil end
+    for node,record in pairs(api.records) do
+        if record.scope=="character" then
+            record.connection:Disconnect()
+            pcall(function() if node[record.property]==record.masked then node[record.property]=record.original end end)
+            api.records[node]=nil
+        end
+    end
+    local function inspect(node)
+        if node:IsA("TextLabel") or node:IsA("TextButton") then pcall(watch,node,"Text","character") end
+    end
+    for _,node in ipairs(character:GetDescendants()) do inspect(node) end
+    local human=character:FindFirstChildOfClass("Humanoid")
+    if human then pcall(watch,human,"DisplayName","character") end
+    api.characterLink=link(character.DescendantAdded,function(node)
+        if not api.enabled then return end
+        if node:IsA("Humanoid") then pcall(watch,node,"DisplayName","character") else inspect(node) end
+    end)
+end
+function api.restore()
+    api.enabled=false
+    for _,connection in ipairs(api.links) do connection:Disconnect() end
+    api.links={}
+    for node,record in pairs(api.records) do
+        pcall(function()
+            if node[record.property]==record.masked then node[record.property]=record.original end
+        end)
+    end
+    api.records={};api.counts={character=0,list=0};api.listProblem=nil;api.characterLink=nil
+end
+function api.refreshCounts()
+    local counts={character=0,list=0}
+    for node,record in pairs(api.records) do
+        if node.Parent and record.masked and node[record.property]==record.masked then counts[record.scope]+=1 end
+    end
+    api.counts=counts
+end
+function api.setEnabled(wanted,restorePreference)
+    wanted=wanted==true
+    if wanted==api.enabled then return true end
+    local previousPreference=uiState.maskName
+    if not restorePreference then
+        uiState.maskName=wanted
+        if not save() then uiState.maskName=previousPreference;api.problem="Could not save Mask Name preference.";return false end
+    end
+    api.restore();api.problem=nil
+    if not wanted then return true end
+    api.alias="Player_"..tostring(Random.new():NextInteger(10000,99999))
+    api.enabled=true
+    local ok,problem=pcall(function()
+        local core=game:GetService("CoreGui")
+        scanList(core)
+        link(core.DescendantAdded,function(node) if api.enabled and listNode(node) then pcall(watch,node,"Text","list") end end)
+    end)
+    if not ok then api.listProblem=true end
+    local playerGui=player:FindFirstChild("PlayerGui")
+    if playerGui then
+        scanList(playerGui)
+        link(playerGui.DescendantAdded,function(node) if api.enabled and listNode(node) then pcall(watch,node,"Text","list") end end)
+    end
+    if player.Character then characterAdded(player.Character) end
+    link(player.CharacterAdded,function(character) if api.enabled then characterAdded(character) end end)
+    api.refreshCounts()
+    return true
+end
+function api.step()
+    if not api.enabled then return end
+    local ok,core=pcall(game.GetService,game,"CoreGui")
+    if ok then scanList(core) end
+    for node,record in pairs(api.records) do
+        if node.Parent then pcall(apply,node,record) end
+    end
+    api.refreshCounts()
+end
+table.insert(cleanupCallbacks,api.restore)
+if uiState.maskName then api.setEnabled(true,true) end
+task.spawn(function()
+    while alive do
+        task.wait(1)
+        if not alive then break end
+        local ok,problem=pcall(api.step)
+        if not ok then api.problem=tostring(problem) end
+    end
+end)
+end
+state.hubParts.shadowIndexDestroy=function(H)
+    local page=H.hub.pages.Misc
+    local template=page.Section_INTERFACE.Act_Language
+    local section=make("Frame",{Name="ShadowIndexDestroy",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=colors.card,BorderSizePixel=0,LayoutOrder=4},page)
+    page.Section_RESTAURAR.LayoutOrder=5
+    make("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder},section)
+    make("UIPadding",{PaddingTop=UDim.new(0,10),PaddingBottom=UDim.new(0,10),PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)},section)
+    local title=make("TextLabel",{Name="Title",Size=UDim2.new(1,0,0,24),BackgroundTransparency=1,Text="",TextColor3=colors.text,Font=Enum.Font.GothamBold,TextSize=13,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=1},section)
+    local caption=make("TextLabel",{Name="Caption",Size=UDim2.new(1,0,0,36),BackgroundTransparency=1,Text="",TextColor3=colors.muted,Font=Enum.Font.Gotham,TextSize=11,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=2},section)
+    local function button(name,order,wanted)
+        local b=template:Clone();b.Name=name;b.LayoutOrder=order;b.Size=UDim2.new(1,0,0,44)
+        for _,key in ipairs({"Action","MirrorText","Bind","Id"}) do b:SetAttribute(key,nil) end
+        b.Parent=section
+        connectUI(b,function() state.shadowIndexDestroy.start(wanted) end)
+        return b
+    end
+    local enable=button("EnableAll",3,true)
+    local disable=button("DisableAll",4,false)
+    local status=make("TextLabel",{Name="Status",Size=UDim2.new(1,0,0,44),BackgroundTransparency=1,Text="",TextColor3=colors.muted,Font=Enum.Font.Gotham,TextSize=12,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=5},section)
+    local function update()
+        local pt,es=uiState.language=="PT",uiState.language=="ES"
+        title.Text=pt and "INDEX · AUTO DESTROY" or "INDEX · AUTO DESTROY"
+        caption.Text=pt and "Marca sombras descobertas para os próximos drops. Bloqueadas são informadas ao terminar." or es and "Marca sombras descubiertas para futuros drops. Informa las bloqueadas al terminar." or "Marks discovered shadows for future drops. Reports locked types when finished."
+        enable.Label.Text=pt and "Ativar em todas as sombras" or es and "Activar en todas las sombras" or "Enable for all shadows"
+        disable.Label.Text=pt and "Desativar em todas as sombras" or es and "Desactivar en todas las sombras" or "Disable for all shadows"
+        status.Text=state.shadowIndexDestroy.status
+    end
+    table.insert(H.periodic,update);update()
+end
+state.hubParts.maskName=function(H)
+    local section=H.hub.pages.Misc.Section_SESSAO
+    local row=section.Row_AntiAFK:Clone();row.Name="Row_MaskName"
+    local order=section.Row_AntiAFK.LayoutOrder+1
+    for _,child in ipairs(section:GetChildren()) do if child:IsA("GuiObject") and child.LayoutOrder>=order then child.LayoutOrder+=1 end end
+    row.LayoutOrder=order
+    row.Toggle:SetAttribute("Bind",nil);row.Toggle:SetAttribute("Id",nil)
+    row.Toggle:SetAttribute("MirrorCaption",nil);row.Toggle:SetAttribute("MirrorCaptionFrom",nil)
+    row.Title.Text="Mask Name"
+    row.Parent=section
+    local function update()
+        local api=state.maskName
+        H.paint(row.Toggle,api.enabled)
+        local pt,es=uiState.language=="PT",uiState.language=="ES"
+        row.Title.Text="Mask Name"
+        row.Desc.Text=api.problem or (not api.enabled and (pt and "Oculta seu nick no personagem e na lista, só na sua tela." or es and "Oculta tu nombre en personaje y lista, solo en tu pantalla." or "Masks your character and player-list name on your screen.")
+            or (api.alias..(api.listProblem and (pt and " · Lista indisponível neste executor." or es and " · Lista no disponible en este ejecutor." or " · Player list unavailable in this executor.")
+                or (pt and " · Nome visual local." or es and " · Nombre visual local." or " · Local visual name."))))
+        row.Desc.TextWrapped=true;row.Desc.TextTruncate=Enum.TextTruncate.None
+        row.Desc.Size=UDim2.new(1,-112,0,30);row.Size=UDim2.new(1,0,0,58)
+    end
+    connectUI(row.Toggle,function() state.maskName.setEnabled(not state.maskName.enabled);update() end)
+    table.insert(H.periodic,update);table.insert(H.languageHooks,update);update()
 end
 -- Visao responsiva: mesmos controles, hierarquia, estilos e handlers; so a geometria muda (celular/PC).
 -- Recebe do nucleo (new-hub-view.lua): main, hub, languageHooks, invoke, link, orderedChildren.
@@ -17270,11 +18253,11 @@ function state.newHubLayout()
 {"UICorner",450,{n="UICorner",cr=D(0,11)}},
 {"Frame",450,{n="Knob",s=U(0,18,0,18),p=U(0,2,0.5,0),ap=V(0,0.5),bc=R(255,255,255)}},
 {"UICorner",452,{n="UICorner",cr=D(0,9)}},
-{"Frame",437,{n="Row_SellRares",s=U(1,0,0,44),bt=1,v=false,lo=2},{["Retired"]=true}},
+{"Frame",437,{n="Row_ShadowBulk",s=U(1,0,0,44),bt=1,lo=2}},
 {"TextLabel",454,{n="TextLabel",s=U(0,30,0,44),p=U(0,10,0,0),bt=1,t="💎",tc=R(236,246,250),ts=20,f=EF.GothamMedium}},
-{"TextLabel",454,{n="Title",s=U(1,-112,0,18),p=U(0,48,0,5),bt=1,t="Vender Raros",tc=R(236,246,250),ts=13,f=EF.GothamBold,xa=EX.Left}},
-{"TextLabel",454,{n="Desc",s=U(1,-112,0,14),p=U(0,48,0,23),bt=1,t="Inclui itens raros na venda.",tc=R(135,162,172),ts=11,f=EF.GothamMedium,xa=EX.Left,tr=Enum.TextTruncate.AtEnd}},
-{"TextButton",454,{n="Toggle",s=U(0,44,0,22),p=U(1,-12,0.5,0),ap=V(1,0.5),bc=R(55,76,88),t="",tc=R(236,246,250),ts=14,f=EF.GothamMedium,abc=false},{["Enabled"]=false,["Id"]="SellRares",["Locked"]=false}},
+{"TextLabel",454,{n="Title",s=U(1,-112,0,18),p=U(0,48,0,5),bt=1,t="Vender em lote",tc=R(236,246,250),ts=13,f=EF.GothamBold,xa=EX.Left}},
+{"TextLabel",454,{n="Desc",s=U(1,-112,0,14),p=U(0,48,0,23),bt=1,t="Acelera a venda somente dos ranks marcados.",tc=R(135,162,172),ts=11,f=EF.GothamMedium,xa=EX.Left,tr=Enum.TextTruncate.AtEnd}},
+{"TextButton",454,{n="Toggle",s=U(0,44,0,22),p=U(1,-12,0.5,0),ap=V(1,0.5),bc=R(55,76,88),t="",tc=R(236,246,250),ts=14,f=EF.GothamMedium,abc=false},{["Bind"]="SellShadowBulk",["Enabled"]=false,["Id"]="SellShadowBulk",["Locked"]=false}},
 {"UICorner",458,{n="UICorner",cr=D(0,11)}},
 {"Frame",458,{n="Knob",s=U(0,18,0,18),p=U(0,2,0.5,0),ap=V(0,0.5),bc=R(255,255,255)}},
 {"UICorner",460,{n="UICorner",cr=D(0,9)}},
@@ -17985,6 +18968,68 @@ function state.newHubLayout()
 {"UIStroke",1164,{n="UIStroke",c=R(0,217,255),th=2,tp=0.1,asm=EM.Border}}
     }
 end
+-- Read-only explanations of existing controller gates; never changes priorities.
+do
+local collection={AutoHauntedHouses=true,AutoPumpkin=true,AutoPumpkinKing=true,AutoKamish=true,AutoGuildBoss=true}
+local eventKinds={AutoWorldBoss="boss",AutoStorm="storm",AutoDeduRaid="dedu",AutoWinterRaid="winter",AutoJungleRaid="jungle",AutoGiantsRaid="giants"}
+local automations={AutoFarmMobs=true,AutoQuest=true,AutoRebirth=true,AutoDistributeStats=true,AutoDungeon=true,
+    RepeatDungeonWithGems=true,AutoLeaveAfterCompletion=true,AutoEquipRunes=true,EquipLastRunes=true,
+    AutoTrialCards=true,AutoSellShadows=true,AutoSellSwords=true,AutoBuy=true,FastClick=true,
+    AutoSpeed=true,AutoExitFloor=true,AutoDodge=true,AutoReconnect=true,AntiAFK=true,SwitchTeams=true,AutoResetQuests=true,TicketRefill=true,
+    ShadowRankUp=true,ShadowReroll=true,ShadowInfusion=true,ShadowIndexDestroy=true}
+local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.language=="ES" and es or en end
+function state.automationPriorityName()
+    local limit=autoQuest.splitQuests and autoQuest.limitBreakerEnabled or autoQuest.profile=="limitbreaker"
+    return limit and "Limit Breaker" or "Auto Quest"
+end
+function state.automationBlockReason(id,enabled)
+    if not enabled or type(id)~="string" then return nil end
+    if not automations[id] and not collection[id] and not eventKinds[id] and not id:match("^Claim_") then return nil end
+    if state.panic then return tr("Pausado: botão de pânico ativo.","Paused: Panic Button is active.","Pausado: botón de pánico activo.") end
+    if state.stopped then return tr("Pausado: Hub encerrada.","Paused: Hub is stopped.","Pausado: Hub detenida.") end
+    if player.GameplayPaused then return tr("Aguardando: carregamento do jogo.","Waiting: game is loading.","Esperando: carga del juego.") end
+    local quest=state.questPriorityActive and state.questPriorityActive()
+    local owner=state.automationPriorityName()
+    local function priority(name)
+        return tr("Pausado: prioridade de ","Paused: priority belongs to ","Pausado: prioridad de ")..name.."."
+    end
+    if quest then
+        if id=="AutoBuy" then return state.buyPriorityNotice and state.buyPriorityNotice() end
+        if collection[id] then return priority(owner) end
+        local kind=eventKinds[id]
+        if kind and state.questPriorityAllows and not state.questPriorityAllows(kind) then return priority(owner) end
+        if id=="AutoDungeon" and not questRuntime.modeRequest and not (state.limitBreakerPortalRequested and state.limitBreakerPortalRequested()) then return priority(owner) end
+        if id=="RepeatDungeonWithGems" and not (state.questTrialRefillPending and state.questTrialRefillPending())
+            and not (state.limitBreakerPortalRequested and state.limitBreakerPortalRequested()
+                and (not insideDungeon() or state.limitBreakerPortalOwnsRun())) then return priority(owner) end
+    end
+    if id=="SwitchTeams" and state.refillTeams and state.refillTeams.owns() then
+        return priority(tr("time da reposição na Trial","Trial refill team","equipo de reposición en Trial"))
+    end
+    if id=="AutoResetQuests" and autoQuest.splitQuests and not autoQuest.limitBreakerEnabled then
+        return tr("Aguardando: ligue o Limit Breaker.","Waiting: enable Limit Breaker.","Esperando: activa Limit Breaker.")
+    end
+    if id=="AutoResetQuests" and autoQuest.journey and autoQuest.journey.bucket=="TicketFarm" then
+        return priority(tr("reposição de Tickets na Trial","Ticket refill in Trial","reposición de Tickets en Trial"))
+    end
+    if id=="AutoDungeon" and not insideDungeon() and state.collectionPriority then
+        local kind=state.collectionPriority()
+        if kind then
+            local names={houses="Haunted Houses",pumpkins="Pumpkins",pumpkinking="Pumpkin King",kamish="Nightmare Kamish"}
+            return priority(names[kind] or tostring(kind))
+        end
+        if state.guild and state.guild.journey and state.guild.journey.phase=="return" then return priority("Guild Boss") end
+    end
+    if id=="AutoFarmMobs" and not farmEnabled() then
+        if state.autoLeaving then return priority(tr("saída do modo","leaving the mode","salida del modo")) end
+        if quest then return priority(owner) end
+        if state.pumpkinBusy then return priority("Pumpkins") end
+        if state.houses and state.houses.busy then return priority("Haunted Houses") end
+        if state.kamishTakingOver then return priority("Nightmare Kamish") end
+    end
+    return nil
+end
+end
 -- NEW HUB VIEW: the new Vykron Hub layout is the visible interface.
 -- The original controls stay alive as the logic layer; every new control calls the
 -- same registered handler (same save(), confirmations and status), so no game logic is duplicated.
@@ -18030,6 +19075,11 @@ function state.installNewHub()
 	local main, openButton = state.buildNewHub()
 	assert(main and openButton, "Layout da hub nova incompleto")
 	local hub = {main = main, open = openButton, pages = main.Pages, header = main.Header, nav = main.Nav, pageHeader = main.PageHeader}
+    local removedRuneReuse=hub.pages.Runas:FindFirstChild("Section_CONFIGURAR RUNAS")
+    if removedRuneReuse then
+        local row=removedRuneReuse:FindFirstChild("Row_EquipLast")
+        if row then row:Destroy() end
+    end
     do
         local section = hub.pages.Misc.Section_INTERFACE
         local selector = section.Act_Language:Clone()
@@ -18087,14 +19137,20 @@ function state.installNewHub()
 	local GREEN, RED, LOCKED = Color3.fromRGB(34, 197, 94), Color3.fromRGB(214, 64, 64), Color3.fromRGB(72, 82, 90)
 	local Tween = game:GetService("TweenService")
 	local FAST = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local toggleLooks=setmetatable({},{__mode="k"})
 	local function paint(toggle, on)
+		local locked=toggle:GetAttribute("Locked")==true
+		local previous=toggleLooks[toggle]
+		if previous and previous.on==(on==true) and previous.locked==locked then return end
+		if previous then for _,tween in ipairs(previous.tweens) do tween:Cancel() end end
+		local look={on=on==true,locked=locked,tweens={}};toggleLooks[toggle]=look
 		toggle:SetAttribute("Enabled", on == true)
 		local color = toggle:GetAttribute("Locked") and LOCKED or (on and GREEN or RED)
 		local knob = toggle:FindFirstChild("Knob")
 		local spot = knob and (on and UDim2.new(1, -(knob.Size.X.Offset + 2), 0.5, 0) or UDim2.new(0, 2, 0.5, 0))
 		if toggle:IsDescendantOf(game) then
-			Tween:Create(toggle, FAST, {BackgroundColor3 = color}):Play()
-			if knob then Tween:Create(knob, FAST, {Position = spot}):Play() end
+			local background=Tween:Create(toggle, FAST, {BackgroundColor3 = color});look.tweens[#look.tweens+1]=background;background:Play()
+			if knob then local movement=Tween:Create(knob, FAST, {Position = spot});look.tweens[#look.tweens+1]=movement;movement:Play() end
 		else
 			toggle.BackgroundColor3 = color
 			if knob then knob.Position = spot end
@@ -18191,6 +19247,24 @@ function state.installNewHub()
 		local knob = row:FindFirstChild("State") and row.State:FindFirstChild("Knob")
 		return knob ~= nil and knob.Position.X.Offset > 10
 	end
+    local pauseRows=setmetatable({},{__mode="k"})
+    local function refreshPauseNotices()
+        for toggle,entry in pairs(pauseRows) do
+            if not toggle.Parent or not entry.desc.Parent then pauseRows[toggle]=nil;continue end
+            local reason=state.automationBlockReason(entry.id,shadowEnabled(entry.row))
+            toggle:SetAttribute("PauseReason",reason)
+            if reason then
+                entry.reason=reason
+                entry.desc.Text=reason
+                entry.desc.TextColor3=Color3.fromRGB(255,196,90)
+            elseif entry.reason then
+                entry.reason=nil;entry.desc.Text=entry.baseText;entry.desc.TextColor3=entry.baseColor
+            end
+        end
+    end
+    state.refreshAutomationPauseNotices=refreshPauseNotices
+    table.insert(periodic,refreshPauseNotices)
+    table.insert(languageHooks,refreshPauseNotices)
 	local function bindToggle(toggle, row, group)
 		toggleMirrors[row] = toggleMirrors[row] or {}
 		table.insert(toggleMirrors[row], toggle)
@@ -18198,14 +19272,23 @@ function state.installNewHub()
 		connectUI(toggle, function() invoke(row) end, nil, group)
 		local desc = toggle.Parent:FindFirstChild("Desc") or toggle.Parent:FindFirstChild("Caption")
 		local caption = row:FindFirstChild("Caption")
+		local entry
+        if desc then
+            entry={id=toggle:GetAttribute("Bind") or row.Name,row=row,desc=desc,baseText=desc.Text,baseColor=desc.TextColor3}
+            pauseRows[toggle]=entry
+        end
+        local function copyCaption(text)
+            if entry then entry.baseText=text end
+            if not entry or not entry.reason then desc.Text=text end
+        end
 		local mode = toggle:GetAttribute("MirrorCaption")
 		local from = toggle:GetAttribute("MirrorCaptionFrom")
 		if desc and from and shadow(from) then
 			local src = shadow(from)
-			link(src:GetPropertyChangedSignal("Text"), function() desc.Text = src.Text end, group)
+			link(src:GetPropertyChangedSignal("Text"), function() copyCaption(src.Text) end, group)
 		elseif desc and caption and mode then
-			if mode == "always" then desc.Text = caption.Text end
-			link(caption:GetPropertyChangedSignal("Text"), function() desc.Text = caption.Text end, group)
+			if mode == "always" then copyCaption(caption.Text) end
+			link(caption:GetPropertyChangedSignal("Text"), function() copyCaption(caption.Text) end, group)
 		end
 	end
 
@@ -18325,6 +19408,7 @@ function state.installNewHub()
 				item.Parent = list
 				bindText(item.Label)
 				connectUI(item, function()
+					if search:IsFocused() then search:ReleaseFocus() end
 					goBack()
 					callback(option.id)
 				end, nil, rows)
@@ -18849,6 +19933,8 @@ function state.installNewHub()
 	state.hubParts.panico({hub = hub, periodic = periodic, bindText = bindText, paint = paint})
 
 	state.hubParts.limitBreak({hub = hub, OFF = OFF, ROW = ROW, languageHooks = languageHooks, periodic = periodic, paint = paint})
+    state.hubParts.shadowIndexDestroy({hub=hub,periodic=periodic})
+    state.hubParts.maskName({hub=hub,periodic=periodic,languageHooks=languageHooks,paint=paint})
 
 	state.hubParts.abasTrade({hub = hub, CYAN = CYAN, ROW = ROW, link = link, getCurrent = function() return current end})
     -- END TRADE TABS
@@ -20248,6 +21334,47 @@ end
 -- END MANOR INTERACTIONS
 
 -- Um unico controlador de movimento. Nao ataca quando desligado ou sem alvo confirmado.
+do
+    local cache
+    function state.groundFarmPosition(position,root)
+        if insideDungeon() or not root or not root.Parent then return position,false end
+        local character=root.Parent
+        local humanoid=character:FindFirstChildOfClass("Humanoid")
+        if not humanoid then return position,false end
+        local now=os.clock()
+        if cache and cache.character==character and now-cache.at<0.25
+            and (position-cache.request).Magnitude<0.5 then return cache.position,true end
+        local params=RaycastParams.new()
+        params.FilterType=Enum.RaycastFilterType.Exclude
+        local excluded={character}
+        local enemies=enemyFolder();if enemies then excluded[#excluded+1]=enemies end
+        params.FilterDescendantsInstances=excluded
+        params.RespectCanCollide=true
+        local hit=workspace:Raycast(position+Vector3.new(0,4,0),Vector3.new(0,-100,0),params)
+        if not hit or hit.Normal.Y<0.6 then return position,false end
+        local height=math.max(0,humanoid.HipHeight)+root.Size.Y/2
+        -- R6 HipHeight excludes the legs; R15 already includes the leg clearance.
+        if humanoid.RigType==Enum.HumanoidRigType.R6 then
+            local leg=character:FindFirstChild("Left Leg") or character:FindFirstChild("Right Leg")
+            if not leg then return position,false end
+            height+=leg.Size.Y
+        end
+        local grounded=Vector3.new(position.X,hit.Position.Y+height,position.Z)
+        cache={character=character,request=position,position=grounded,at=now}
+        return grounded,true
+    end
+    function state.placeFarmRoot(root,position,lookAt)
+        local grounded,hasGround=state.groundFarmPosition(position,root)
+        if hasGround and (root.Position-grounded).Magnitude<0.2 then
+            -- Let gravity/contact settle instead of resetting Freefall every frame.
+            local velocity=root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity=Vector3.new(0,velocity.Y,0)
+            return
+        end
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.CFrame=lookAt and CFrame.lookAt(grounded,Vector3.new(lookAt.X,grounded.Y,lookAt.Z)) or CFrame.new(grounded)
+    end
+end
 connect(RunService.Heartbeat, function()
     if not alive or state.panic or state.leaving or state.autoLeaving or state.rebirthing or player.GameplayPaused or (os.clock() < (state.entryUntil or 0) and not state.manorHuntActive) then
         if state.dodge and state.dodge.cancel then state.dodge.cancel() end
@@ -20320,11 +21447,24 @@ connect(RunService.Heartbeat, function()
         end
         return
     end
+    if player:GetAttribute("Swimming") and not player:GetAttribute("Mounted") and not insideDungeon() and not events.active then
+        local island=autoQuest.enabled and questRuntime.combat and questRuntime.island or state.enabled and state.map
+        local anchor=state.fixedFarmAnchor and state.fixedFarmAnchor(island)
+        local root=rootPart()
+        if anchor and root and (root.Position-anchor).Magnitude<250 then
+            local safe,confirmed=state.groundFarmPosition(anchor,root)
+            if confirmed then
+                root.AssemblyLinearVelocity=Vector3.zero
+                root.CFrame=CFrame.new(safe)
+                state.lastFarmPosition=root.Position
+            end
+            return
+        end
+    end
     if autoQuest.enabled and (state.questPriorityActive and state.questPriorityActive() or not state.houses.enabled or state.houses.route.waitUntil ~= nil) and not events.active and not insideDungeon() then
         local root = rootPart()
         if questRuntime.destination and root and not player:GetAttribute("Mounted") and not player:GetAttribute("Swimming") then
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.CFrame = CFrame.new(questRuntime.destination)
+            state.placeFarmRoot(root,questRuntime.destination)
             state.lastFarmPosition = root.Position
             return
         end
@@ -20340,15 +21480,22 @@ connect(RunService.Heartbeat, function()
     if player:GetAttribute("Mounted") or player:GetAttribute("Swimming") then return end
     if not living(state.target, folder) then
         if state.searchPosition and not state.leaving and os.clock() >= (state.entryUntil or 0) then
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.CFrame = CFrame.new(state.searchPosition)
+            if insideDungeon() then
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.CFrame = CFrame.new(state.searchPosition)
+            else state.placeFarmRoot(root,state.searchPosition) end
             state.lastFarmPosition = root.Position
         end
         return
     end
     local position = state.target.Position
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.CFrame = CFrame.lookAt(position + Vector3.new(0, 3, 4), position + Vector3.new(0, 3, 0))
+    if insideDungeon() then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.CFrame = CFrame.lookAt(position + Vector3.new(0, 3, 4), position + Vector3.new(0, 3, 0))
+    else
+        local fixed=not events.active and state.fixedFarmAnchor and state.fixedFarmAnchor(state.target:GetAttribute("MapId"))
+        state.placeFarmRoot(root,fixed or position+Vector3.new(0,3,4),position)
+    end
     state.lastFarmPosition = root.Position
 end)
 task.spawn(function()
