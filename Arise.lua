@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-CRAFT-QUEST-CONCURRENCY-2.0-TEST54-20261124"
+state.build = "VYKRON-LB-STORM-INFUSION-QUEUE-2.0-TEST57-20261124"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -9038,6 +9038,7 @@ do
         if not state.syncKeyAFK(keyWanted) then owned.status="Auto Keys: aguardando confirmar Usar Dungeon Keys no AFK nativo.";return end
         if not forceRestore and quest then
             local mode=autoQuest.journey and autoQuest.journey.mode or "waiting"
+            if state.limitBreakerStormRequested and state.limitBreakerStormRequested() then mode="waiting" end
             state.syncQuestAFK(mode);owned.status="Auto Quest: AFK limitado ao modo exigido ("..mode..").";return
         end
         local wanted = not forceRestore and not state.panic and ((dungeon.enabled == true and dungeon.mode == "infernal")
@@ -10810,13 +10811,22 @@ local function message(text)
     questStatus.Text=text
 end
 function state.questWantsEvent(kind)
+    if state.limitBreakerStormRequested and state.limitBreakerStormRequested() then return kind=="storm" end
     return policy.enabled(autoQuest) and not state.panic and api.demands[kind]==true
 end
 function state.questPriorityActive()
     return (state.questProfiles and autoQuest.enabled==true or policy.enabled(autoQuest)) and not state.panic and not state.stopped
 end
 function state.questPriorityAllows(kind)
-    return not state.questPriorityActive() or api.demands[kind]==true
+    return not state.questPriorityActive() or state.questWantsEvent(kind)
+end
+function state.limitBreakerStormRequested()
+    local limit=autoQuest.profile=="limitbreaker"
+    if autoQuest.splitQuests then limit=autoQuest.limitBreakerEnabled==true end
+    if not limit or not policy.enabled(autoQuest) or not storm or storm.enabled~=true or state.panic or state.stopped then return false end
+    local map=events.currentStormMap
+    local info=map and mapInfo[map]
+    return info~=nil and tonumber(info.World)==tonumber(storage:GetAttribute("World"))
 end
 function state.questTicketStock()
     local inventory=clientData.Get("Inventory","Items")
@@ -10833,7 +10843,8 @@ function state.limitBreakerPortalEnabled()
     return limit and policy.enabled(autoQuest) and dungeon.enabled==true and dungeon.mode=="portal"
 end
 function state.limitBreakerPortalRequested()
-    if not state.limitBreakerPortalEnabled() or state.panic or state.stopped or state.autoLeaving or autoQuest.journey then return false end
+    if not state.limitBreakerPortalEnabled() or state.panic or state.stopped or state.autoLeaving or autoQuest.journey
+        or state.limitBreakerStormRequested() then return false end
     local stock,capacity=state.questTicketStock()
     local reset=state.questReset
     local refill=(not autoQuest.splitQuests or autoQuest.resetQuests==true) and (not state.questProfiles or state.questProfiles.refill(autoQuest))
@@ -10876,6 +10887,7 @@ function state.questTrialRefillEnded()
     return ok and type(schedule)=="table" and schedule.Open==false
 end
 function state.questTrialRefillPending()
+    if state.limitBreakerStormRequested() then return false end
     local job=autoQuest.journey
     if not policy.enabled(autoQuest) or state.panic or not job or job.bucket~="TicketFarm"
         or job.mode~="trial" or not insideDungeon() or not state.recurringRunMatches(job) then return false end
@@ -11111,6 +11123,23 @@ function state.recurringQuestStep()
     end
     local groups,claims,blocked=policy.scan(definitions,clientData.Get,autoQuest)
     api.groups,api.blocked=groups,blocked
+    if state.limitBreakerStormRequested() then
+        api.demands={storm=true};api.hasModePending=true
+        questRuntime.filter=nil;questRuntime.destination=nil;questRuntime.modeRequest=nil;questRuntime.combat=false
+        if insideDungeon() then
+            state.autoLeaving=true
+            if os.clock()>=(api.exitAt or 0) then api.exitAt=os.clock()+8;state.requestDungeonExit() end
+            message(tr("Limit Breaker: saindo do modo para a Storm ativa.","Limit Breaker: leaving the mode for the active Storm.","Limit Breaker: saliendo del modo para la Storm activa."))
+            return true
+        end
+        state.autoLeaving=nil
+        if #claims>0 and os.clock()>=api.claimAt then
+            api.claimAt=os.clock()+8
+            local claim=claims[1];general:Fire({Event="ClaimQuest",Type=claim.bucket,Id=claim.id})
+        end
+        message(tr("Limit Breaker: permanecendo na ilha da Storm até o evento terminar.","Limit Breaker: staying on the Storm island until the event ends.","Limit Breaker: permaneciendo en la isla de la Storm hasta que termine el evento."))
+        return true
+    end
     api.hasModePending=false
     for _,group in ipairs(groups) do if group.kind=="mode" then api.hasModePending=true end end
     for _,item in ipairs(blocked) do
@@ -13214,6 +13243,25 @@ end
 end
 -- END SHADOW CRAFT RUNTIME
 do
+local viewQueued=false
+local function updateView()
+    state.shadowInventoryCache=nil
+    if viewQueued then return end
+    viewQueued=true
+    task.defer(function()
+        viewQueued=false
+        if alive and not state.stopped and state.refreshInfusionView then
+            pcall(state.refreshInfusionView)
+        end
+    end)
+end
+if type(clientData.OnChange)=="function" then
+    local ok,subscription=pcall(clientData.OnChange,{"Inventory","Pets"},updateView)
+    if ok and subscription then
+        if type(subscription)=="function" then table.insert(cleanupCallbacks,subscription)
+        elseif type(subscription.Disconnect)=="function" then table.insert(cleanupCallbacks,function() subscription:Disconnect() end) end
+    end
+end
 function state.infusionData()
     local deps,entries,problem=state.shadowCraftData(true)
     if not entries then return deps,nil,problem end
@@ -13370,6 +13418,7 @@ function state.infusionStep(now)
             run.recoverRequested=nil;run.recovery=nil
             run.status="Infusão confirmada.";run.evidence=evidence;run.nextAt=now+0.6
             if not save() then prefs.pending=receipt;run.confirmed-=1;run.running=false;run.status="Falha ao salvar; nenhuma infusão foi enviada." end
+            updateView()
         else
             run.status=run.recoverRequested and "Revisando pendência antiga da infusão." or now-receipt.at>=15 and "Aguardando sincronização; sem duplicar a infusão." or "Aguardando resultado da infusão."
             recoverPending(prefs,run,receipt,entry,now)
@@ -13405,6 +13454,7 @@ function state.infusionStep(now)
     run.sent=(run.sent or 0)+1
     local ok=pcall(function() general:Fire({Event="ShadowEnchant",Shadow=plan.uid,BuyType=plan.payment,Locks=table.clone(plan.locks),AutoEnchant=false}) end)
     run.status=ok and "Aguardando resultado da infusão." or "Falha ao enviar a infusão; aguardando sincronização."
+    updateView()
 end
 end
 -- Persist one explicit Craft owner, without serializing transient running flags.
@@ -14054,13 +14104,14 @@ function state.installInfusionUI(H)
         local queueReason
         if deps and entries then local _,_,why,counts=state.infusionQueue(entries,p,deps.infusion.catalog,deps.balance);summary=counts;queueReason=why
         else for _,on in pairs(p.selected) do if on then summary.total+=1 end end end
+        local remaining=summary.total
         local finished=0;for _ in pairs(p.finished or {}) do finished+=1 end
         summary.total+=finished;summary.complete+=finished
         if queueOpen and not next(p.selected) then queueOpen=false;queue.Visible=false end
         text(back,tr("‹ Voltar","‹ Back","‹ Volver"));text(title,state.infusionText("INFUSÃO DE SOMBRAS"))
         text(subtitle,state.infusionText("Metas, bônus e travas de infusão."))
         for _,b in ipairs({back,change,maxButton,selection,clear,queuePrev,queueNext,queueAdd,queueClear}) do paintButton(b) end
-        text(selection,tr("Sombras selecionadas: ","Selected shadows: ","Sombras seleccionadas: ")..summary.total.." >")
+        text(selection,tr("Sombras selecionadas: ","Selected shadows: ","Sombras seleccionadas: ")..remaining.." >")
         text(clear,tr("Limpar lista","Clear list","Limpiar lista"))
         text(queueAdd,tr("Adicionar","Add","Añadir"));text(queueClear,tr("Limpar","Clear","Limpiar"))
         if queueOpen then
@@ -14148,6 +14199,9 @@ function state.installInfusionUI(H)
         fill.Size=UDim2.fromScale(summary.total>0 and summary.complete/summary.total or 0,1)
         text(start,running and tr("PARAR INFUSÃO","STOP INFUSION","DETENER INFUSIÓN") or tr("INICIAR INFUSÃO","START INFUSION","INICIAR INFUSIÓN"))
         paintButton(start,running and Color3.fromRGB(110,30,40) or colors.accent,running and colors.text or colors.bg)
+    end
+    state.refreshInfusionView=function()
+        if header.Visible then refresh(true) end
     end
     table.insert(cleanupCallbacks,state.infusionStop)
     return {refresh=refresh}
@@ -16812,7 +16866,7 @@ state.hubParts.autoBuy = function(H)
 		local section = hub.pages.SellBuy.Section_COMPRA
         local priorityNotice=make("TextLabel",{Name="BuyPriorityNotice",Size=UDim2.new(1,-24,0,0),
             AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=colors.edge,BorderSizePixel=0,
-            Text="",TextSize=13,Font=Enum.Font.GothamBold,TextColor3=Color3.fromRGB(255,196,82),TextWrapped=true,
+            Text="",TextSize=15,Font=Enum.Font.GothamBold,TextColor3=Color3.fromRGB(255,196,82),TextWrapped=true,
             TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=1,Visible=false},section)
         make("UIPadding",{PaddingTop=UDim.new(0,10),PaddingBottom=UDim.new(0,10),
             PaddingLeft=UDim.new(0,10),PaddingRight=UDim.new(0,10)},priorityNotice)
@@ -16907,6 +16961,22 @@ state.hubParts.autoBuy = function(H)
                         mirror(owned,inventorySource,nil,false,group)
                     end
 					card.Parent = list
+                    local caption=card.Caption
+                    local baseSize,baseHeight=math.max(14,caption.TextSize),card.Size.Y.Offset
+                    local targetPos,labelPos=card.Target.Position,card.TargetLabel.Position
+                    local function refreshWarningSize()
+                        local warning=caption.TextColor3==Color3.fromRGB(255,196,82)
+                        caption.TextSize=warning and 14 or baseSize
+                        caption.AutomaticSize=Enum.AutomaticSize.Y
+                        caption.TextWrapped=true
+                        local extra=math.max(0,caption.TextBounds.Y-34)
+                        card.Size=UDim2.new(card.Size.X.Scale,card.Size.X.Offset,0,baseHeight+extra)
+                        card.Target.Position=targetPos+UDim2.fromOffset(0,extra)
+                        card.TargetLabel.Position=labelPos+UDim2.fromOffset(0,extra)
+                    end
+                    link(caption:GetPropertyChangedSignal("TextColor3"),refreshWarningSize,group)
+                    link(caption:GetPropertyChangedSignal("TextBounds"),refreshWarningSize,group)
+                    refreshWarningSize()
 				end
 			end
 		end)
@@ -18994,6 +19064,9 @@ function state.automationBlockReason(id,enabled)
         return tr("Pausado: prioridade de ","Paused: priority belongs to ","Pausado: prioridad de ")..name.."."
     end
     if quest then
+        if (id=="AutoDungeon" or id=="RepeatDungeonWithGems") and state.limitBreakerStormRequested and state.limitBreakerStormRequested() then
+            return priority("Storm")
+        end
         if id=="AutoBuy" then return state.buyPriorityNotice and state.buyPriorityNotice() end
         if collection[id] then return priority(owner) end
         local kind=eventKinds[id]
@@ -19075,6 +19148,27 @@ function state.installNewHub()
 	local main, openButton = state.buildNewHub()
 	assert(main and openButton, "Layout da hub nova incompleto")
 	local hub = {main = main, open = openButton, pages = main.Pages, header = main.Header, nav = main.Nav, pageHeader = main.PageHeader}
+    local explanationNames={Desc=true,Caption=true,Description=true,Hint=true,Note=true,Sub=true}
+    local function readableExplanation(node)
+        if not node:IsA("TextLabel") or not explanationNames[node.Name] then return end
+        if node.TextSize>=14 then return end
+        node.TextSize=14
+        node.TextScaled=false
+        node.TextWrapped=true
+        node.TextTruncate=Enum.TextTruncate.None
+        node.AutomaticSize=Enum.AutomaticSize.Y
+        local row=node.Parent
+        if row and row:FindFirstChild("Toggle") and row.Parent and row.Parent:FindFirstChildOfClass("UIListLayout") then
+            row.AutomaticSize=Enum.AutomaticSize.Y
+        end
+    end
+    for _,node in ipairs(main:GetDescendants()) do readableExplanation(node) end
+    connect(main.DescendantAdded,function(node) task.defer(function()
+        if node.Parent then readableExplanation(node) end
+    end) end)
+    state.refreshExplanationText=function()
+        for _,node in ipairs(main:GetDescendants()) do readableExplanation(node) end
+    end
     local removedRuneReuse=hub.pages.Runas:FindFirstChild("Section_CONFIGURAR RUNAS")
     if removedRuneReuse then
         local row=removedRuneReuse:FindFirstChild("Row_EquipLast")
@@ -19257,8 +19351,18 @@ function state.installNewHub()
                 entry.reason=reason
                 entry.desc.Text=reason
                 entry.desc.TextColor3=Color3.fromRGB(255,196,90)
+                entry.desc.TextSize=14
+                entry.desc.TextWrapped=true
+                entry.desc.TextTruncate=Enum.TextTruncate.None
+                entry.desc.AutomaticSize=Enum.AutomaticSize.Y
+                toggle.Parent.AutomaticSize=Enum.AutomaticSize.Y
             elseif entry.reason then
                 entry.reason=nil;entry.desc.Text=entry.baseText;entry.desc.TextColor3=entry.baseColor
+                entry.desc.TextSize=math.max(14,entry.baseSize)
+                entry.desc.TextWrapped=entry.baseWrapped
+                entry.desc.TextTruncate=entry.baseTruncate
+                entry.desc.AutomaticSize=entry.baseAutoSize
+                toggle.Parent.AutomaticSize=entry.baseRowAutoSize
             end
         end
     end
@@ -19274,7 +19378,9 @@ function state.installNewHub()
 		local caption = row:FindFirstChild("Caption")
 		local entry
         if desc then
-            entry={id=toggle:GetAttribute("Bind") or row.Name,row=row,desc=desc,baseText=desc.Text,baseColor=desc.TextColor3}
+            entry={id=toggle:GetAttribute("Bind") or row.Name,row=row,desc=desc,baseText=desc.Text,baseColor=desc.TextColor3,
+                baseSize=desc.TextSize,baseWrapped=desc.TextWrapped,baseTruncate=desc.TextTruncate,
+                baseAutoSize=desc.AutomaticSize,baseRowAutoSize=toggle.Parent.AutomaticSize}
             pauseRows[toggle]=entry
         end
         local function copyCaption(text)
