@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-LB-KAMISH-2.0-TEST62-20261124"
+state.build = "VYKRON-LB-LOCAL-FARM-2.0-TEST63-20261124"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -577,7 +577,9 @@ function state.openRaidProfile()
 end
 function state.openRaidEnabled(kind)
     local raid=state.openRaids[kind]
-    if state.questPriorityActive and state.questPriorityActive() then return raid~=nil and state.questWantsEvent(kind) end
+    if state.questPriorityActive and state.questPriorityActive() then
+        return raid~=nil and (state.questWantsEvent(kind) or raid.enabled==true and state.questPriorityAllows and state.questPriorityAllows(kind))
+    end
     return raid ~= nil and (raid.enabled == true or state.questWantsEvent and state.questWantsEvent(kind)==true)
 end
 function state.openRaidCandidate(raid, id, shield)
@@ -1789,6 +1791,7 @@ local function farmEnabled()
     if state.panic then return false end
     if state.autoLeaving then return false end
     if state.questPriorityActive and state.questPriorityActive() then
+        if state.houses.fighting and state.questPriorityAllows and state.questPriorityAllows("houses") then return true end
         if state.limitBreakerPortalOwnsRun and state.limitBreakerPortalOwnsRun() then return true end
         if insideDungeon() then return autoQuest.journey~=nil and autoQuest.journey.enterRequested==true and (not autoQuest.journey.bucket or state.recurringRunMatches(autoQuest.journey)) end
         if events.active then return state.questWantsEvent(events.active) end
@@ -2421,7 +2424,8 @@ function state.kamishScheduleDue(config,now,bossPresent)
 end
 function state.kamishDue()
     if state.questPriorityActive and state.questPriorityActive()
-        and not (state.questPriorityAllows and state.questPriorityAllows("kamish")) then return false end
+        and not (state.limitBreakerLocalAllows and state.limitBreakerLocalAllows("kamish")
+            and not state.limitBreakerStormRequested()) then return false end
     return state.kamishScheduleDue(state.kamish,workspace:GetServerTimeNow(),state.kamishBoss()~=nil)
 end
 -- Follow the true replicated Baizen marker; clone HP snapshots are mirrored.
@@ -4543,7 +4547,8 @@ function state.kingNotice(packet)
     return nil
 end
 function state.kingDue()
-    if state.questPriorityActive and state.questPriorityActive() then return false end
+    if state.questPriorityActive and state.questPriorityActive()
+        and not (state.limitBreakerLocalAllows and state.limitBreakerLocalAllows("pumpkinking")) then return false end
     local config = state.pumpkinKing
     if not config.enabled then return false end
     if events.active == "pumpkinking" then return true end
@@ -4554,16 +4559,19 @@ end
 -- END HALLOWEEN POLICY
 
 function state.houseCollectionDue()
-    if state.questPriorityActive and state.questPriorityActive() then return nil end
+    if state.questPriorityActive and state.questPriorityActive()
+        and not (state.limitBreakerLocalAllows and state.limitBreakerLocalAllows("houses")) then return nil end
     local houses = state.houses
     if not houses.enabled then return false end
+    if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled() and state.houseLocalDue then return state.houseLocalDue() end
     if houses.route.returnWorld then return true end
     local untilAt = houses.route.waitUntil
     local now = tonumber(storage:GetAttribute("DateTime"))
     return untilAt == nil or (now ~= nil and untilAt <= now)
 end
 function state.pumpkinCollectionDue()
-    if state.questPriorityActive and state.questPriorityActive() then return nil end
+    if state.questPriorityActive and state.questPriorityActive()
+        and not (state.limitBreakerLocalAllows and state.limitBreakerLocalAllows("pumpkins")) then return nil end
     if not pumpkin.enabled or not state.isHalloweenNight() or os.clock() < (state.pumpkinNextScan or 0) then return false end
     if state.pumpkinBusy then return true end
     local extra = workspace:FindFirstChild("__Extra")
@@ -4579,7 +4587,8 @@ function state.pumpkinCollectionDue()
 end
 function state.collectionPriority()
     if state.questPriorityActive and state.questPriorityActive() then
-        return state.limitBreakerKamishRequested and state.limitBreakerKamishRequested() and "kamish" or nil
+        local kind=state.limitBreakerFarmActivity and state.limitBreakerFarmActivity()
+        return (kind=="kamish" or kind=="houses" or kind=="pumpkins" or kind=="pumpkinking") and kind or nil
     end
     if state.kamishDue() then return "kamish" end
     if state.houseCollectionDue() then return "houses" end
@@ -8275,13 +8284,14 @@ do
             if not alive then break end
             if state.panic then continue end
             local ok, problem = pcall(function()
-                if state.questPriorityActive and state.questPriorityActive() then clear(false);caption("Auto Quest: Pumpkin King pausado.");return end
+                if state.questPriorityActive and state.questPriorityActive()
+                    and not (state.questPriorityAllows and state.questPriorityAllows("pumpkinking")) then clear(false);caption("Auto Quest: Pumpkin King pausado.");return end
                 local config, now = state.pumpkinKing, workspace:GetServerTimeNow()
                 if not config.enabled then clear(true) caption("Desligado.") return end
                 if insideDungeon() or state.leaving or state.autoLeaving or state.rebirthing then
                     clear(false) caption("Pumpkin King: aguardando concluir a partida.") return
                 end
-                if state.houseCollectionDue() or state.kamishDue() then
+                if (not (state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled()) and state.houseCollectionDue()) or state.kamishDue() then
                     clear(false) caption("Pumpkin King: aguardando coleta prioritária.") return
                 end
                 if state.guild.journey then caption("Pumpkin King: aguardando retorno da guilda.") return end
@@ -8403,6 +8413,8 @@ local function raidTravelBlocked()
         or (not (state.questPriorityActive and state.questPriorityActive()) and (state.guild.journey ~= nil or state.houses.busy or state.houses.fighting ~= nil))
 end
 function state.beginRaidJourney(kind, root, world)
+    if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled()
+        and tonumber(state.openRaids[kind].world)~=tonumber(world) then return false end
     if state.raidTravel then return state.raidTravel.kind==kind end
     local raid=state.openRaids[kind]
     local now=workspace:GetServerTimeNow()
@@ -8445,6 +8457,16 @@ local function raidTravelFire(world, travel, now)
     return true
 end
 function state.stepRaidJourney()
+    if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled() then
+        local travel=state.raidTravel
+        if travel and (travel.phase=="going" or travel.phase=="returning") then
+            local world=tonumber(storage:GetAttribute("World"))
+            local destination=travel.phase=="returning" and travel.originWorld or state.openRaids[travel.kind].world
+            if tonumber(destination)~=world then state.raidTravel=nil;save();return end
+        end
+        -- Local raids need no cross-world travel coordinator.
+        if not travel then return end
+    end
     if state.questPriorityActive and state.questPriorityActive() and state.raidTravel and not state.questWantsEvent(state.raidTravel.kind) then
         local travel=state.raidTravel
         if travel.phase~="returning" then state.raidTravel=nil;save();return end
@@ -9087,8 +9109,7 @@ do
         if not state.syncKeyAFK(keyWanted) then owned.status="Auto Keys: aguardando confirmar Usar Dungeon Keys no AFK nativo.";return end
         if not forceRestore and quest then
             local mode=autoQuest.journey and autoQuest.journey.mode or "waiting"
-            if state.limitBreakerStormRequested and state.limitBreakerStormRequested()
-                or state.limitBreakerKamishRequested and state.limitBreakerKamishRequested() then mode="waiting" end
+            if state.limitBreakerFarmActivity and state.limitBreakerFarmActivity() then mode="waiting" end
             state.syncQuestAFK(mode);owned.status="Auto Quest: AFK limitado ao modo exigido ("..mode..").";return
         end
         local wanted = not forceRestore and not state.panic and ((dungeon.enabled == true and dungeon.mode == "infernal")
@@ -9335,7 +9356,8 @@ do
         return nil
     end
     function state.guildPriorityActive()
-        if state.questPriorityActive and state.questPriorityActive() then return false end
+        if state.questPriorityActive and state.questPriorityActive()
+            and not (state.questPriorityAllows and state.questPriorityAllows("guild")) then return false end
         local journey = state.guild.journey
         if not state.guild.enabled or not journey or journey.phase == "return" then
             if events.active == "guild" then events.active = nil end
@@ -9410,6 +9432,7 @@ do
         if events.active == "guild" then events.active = nil end
         local world = tonumber(storage:GetAttribute("World"))
         if world ~= journey.originWorld then
+            if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled() then finishJourney("Limit Breaker: retorno para outro mundo suspenso.");return end
             labelStatus("Retornando ao mundo " .. journey.originWorld .. "...")
             if now < (journey.returnAt or 0) then return end
             if (journey.returnAttempts or 0) >= 3 then finishJourney("Falha ao retornar ao mundo inicial. Retorno manual necessário.") return end
@@ -9694,7 +9717,8 @@ do
             task.wait(1)
             if not alive then break end
             if state.panic then continue end
-            if state.questPriorityActive and state.questPriorityActive() then
+            if state.questPriorityActive and state.questPriorityActive()
+                and not (state.questPriorityAllows and state.questPriorityAllows("guild")) then
                 if events.active=="guild" then events.active=nil;state.eventDestination=nil end
                 labelStatus("Auto Quest: guilda pausada.");continue
             end
@@ -10931,16 +10955,22 @@ local function message(text)
     questStatus.Text=text
 end
 function state.questWantsEvent(kind)
-    if state.limitBreakerStormRequested and state.limitBreakerStormRequested() then return kind=="storm" end
-    if state.limitBreakerKamishRequested and state.limitBreakerKamishRequested() then return kind=="kamish" end
+    if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled() then
+        local owner=state.limitBreakerFarmActivity()
+        if owner then return owner==kind end
+        if not state.limitBreakerLocalAllows(kind) then return false end
+    end
     return policy.enabled(autoQuest) and not state.panic and api.demands[kind]==true
 end
 function state.questPriorityActive()
     return (state.questProfiles and autoQuest.enabled==true or policy.enabled(autoQuest)) and not state.panic and not state.stopped
 end
 function state.questPriorityAllows(kind)
-    if kind=="storm" and state.limitBreakerStormEnabled and state.limitBreakerStormEnabled() then return true end
-    if kind=="kamish" and state.limitBreakerKamishEnabled and state.limitBreakerKamishEnabled() then return true end
+    if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled() then
+        if not state.limitBreakerLocalAllows(kind) then return false end
+        local owner=state.limitBreakerFarmActivity()
+        return not owner or owner==kind
+    end
     return not state.questPriorityActive() or state.questWantsEvent(kind)
 end
 function state.limitBreakerStormEnabled()
@@ -10958,8 +10988,47 @@ end
 function state.limitBreakerKamishEnabled()
     local limit=autoQuest.profile=="limitbreaker"
     if autoQuest.splitQuests then limit=autoQuest.limitBreakerEnabled==true end
-    return limit and policy.enabled(autoQuest) and type(state.kamish)=="table" and state.kamish.enabled==true
+    return limit and policy.enabled(autoQuest) and tonumber(storage:GetAttribute("World"))==3 and type(state.kamish)=="table" and state.kamish.enabled==true
         and not state.panic and not state.stopped and not state.limitBreakerStormRequested()
+end
+function state.limitBreakerFarmEnabled()
+    local limit=autoQuest.profile=="limitbreaker"
+    if autoQuest.splitQuests then limit=autoQuest.limitBreakerEnabled==true end
+    return limit and policy.enabled(autoQuest) and not state.panic and not state.stopped
+end
+function state.limitBreakerLocalAllows(kind)
+    if not state.limitBreakerFarmEnabled() then return false end
+    local world=tonumber(storage:GetAttribute("World"))
+    if kind=="kamish" then return world==3 end
+    local raid=state.openRaids and state.openRaids[kind]
+    if type(raid)=="table" then return tonumber(raid.world)==world end
+    return kind=="storm" or kind=="boss" or kind=="guild" or kind=="houses" or kind=="pumpkins" or kind=="pumpkinking"
+end
+function state.limitBreakerFarmActivity()
+    if not state.limitBreakerFarmEnabled() then return nil end
+    if state.limitBreakerStormRequested() then return "storm" end
+    -- Finish the selected local event before starting another one.
+    if events.active and state.limitBreakerLocalAllows(events.active) then return events.active end
+    if state.limitBreakerKamishRequested() then return "kamish" end
+    if state.guild and state.guild.journey and state.limitBreakerLocalAllows("guild") then return "guild" end
+    local now=workspace:GetServerTimeNow()
+    if worldBoss and worldBoss.enabled and (tonumber(events.bossUntil) or 0)>now then return "boss" end
+    local root=rootPart()
+    if worldBoss and worldBoss.enabled and root and type(nearestWorldBoss)=="function" and nearestWorldBoss(enemyFolder(),root.Position) then return "boss" end
+    for _,kind in ipairs(state.openRaidOrder or {}) do
+        local raid=state.openRaids[kind]
+        if raid.enabled and state.limitBreakerLocalAllows(kind) and not raid.closed and not raid.ended
+            and now>=(raid.retryAt or 0) and ((raid.untilAt or 0)>now or raid.present==true) then return kind end
+    end
+    if type(state.kingDue)=="function" and state.kingDue() then return "pumpkinking" end
+    if type(state.houseCollectionDue)=="function" and state.houseCollectionDue() then return "houses" end
+    if type(state.pumpkinCollectionDue)=="function" and state.pumpkinCollectionDue() then return "pumpkins" end
+    return nil
+end
+function state.limitBreakerFarmName(kind)
+    local names={storm="Storm",kamish="Nightmare Kamish",boss="World Boss",guild="Guild Boss",houses="Haunted Houses",pumpkins="Pumpkins",pumpkinking="Pumpkin King"}
+    local raid=state.openRaids and state.openRaids[kind]
+    return names[kind] or raid and raid.name or tostring(kind)
 end
 function state.limitBreakerKamishRequested()
     if not state.limitBreakerKamishEnabled() or (tonumber(clientData.Get("Rank")) or 0)<20 then return false end
@@ -10982,7 +11051,7 @@ function state.limitBreakerPortalEnabled()
 end
 function state.limitBreakerPortalRequested()
     if not state.limitBreakerPortalEnabled() or state.panic or state.stopped or state.autoLeaving or autoQuest.journey
-        or state.limitBreakerStormRequested() or state.limitBreakerKamishRequested() then return false end
+        or state.limitBreakerFarmActivity() then return false end
     local stock,capacity=state.questTicketStock()
     local reset=state.questReset
     local refill=(not autoQuest.splitQuests or autoQuest.resetQuests==true) and (not state.questProfiles or state.questProfiles.refill(autoQuest))
@@ -11025,7 +11094,7 @@ function state.questTrialRefillEnded()
     return ok and type(schedule)=="table" and schedule.Open==false
 end
 function state.questTrialRefillPending()
-    if state.limitBreakerStormRequested() or state.limitBreakerKamishRequested() then return false end
+    if state.limitBreakerFarmActivity() then return false end
     local job=autoQuest.journey
     if not policy.enabled(autoQuest) or state.panic or not job or job.bucket~="TicketFarm"
         or job.mode~="trial" or not insideDungeon() or not state.recurringRunMatches(job) then return false end
@@ -11173,6 +11242,9 @@ local function farm(group)
             message(tr("Ilha fixa: selecione uma ilha disponível.","Fixed island: select an available island.","Isla fija: elige una isla disponible."));return true
         end
         if tonumber(info.World)~=world then
+            if state.limitBreakerFarmEnabled() then
+                message(tr("Ilha fixa: escolha uma ilha do mundo atual; viagens entre mundos suspensas pelo Limit Breaker.","Fixed island: choose an island in the current world; cross-world travel suspended by Limit Breaker.","Isla fija: elige una isla del mundo actual; viajes entre mundos suspendidos por Limit Breaker."));return true
+            end
             local needRank=({0,7,20})[tonumber(info.World) or 0]
             if not needRank or (tonumber(clientData.Get("Rank")) or 0)<needRank then message(tr("Ilha fixa: mundo ainda bloqueado pelo rank.","Fixed island: world is still rank locked.","Isla fija: mundo bloqueado por rango."));return true end
             if not autoExecute then message(tr("Ilha fixa: ative Auto Execute para trocar de mundo.","Fixed island: enable Auto Execute to change worlds.","Isla fija: activa Auto Execute para cambiar de mundo."));return true end
@@ -11262,14 +11334,14 @@ function state.recurringQuestStep()
     end
     local groups,claims,blocked=policy.scan(definitions,clientData.Get,autoQuest)
     api.groups,api.blocked=groups,blocked
-    local priorityEvent=state.limitBreakerStormRequested() and "storm" or state.limitBreakerKamishRequested() and "kamish"
+    local priorityEvent=state.limitBreakerFarmActivity()
     if priorityEvent then
         api.demands={[priorityEvent]=true};api.hasModePending=true
         questRuntime.filter=nil;questRuntime.destination=nil;questRuntime.modeRequest=nil;questRuntime.combat=false
         if insideDungeon() then
             state.autoLeaving=true;api.priorityEventExit=true
             if os.clock()>=(api.exitAt or 0) then api.exitAt=os.clock()+8;state.requestDungeonExit() end
-            message(priorityEvent=="kamish" and tr("Limit Breaker: saindo do modo para o Kamish.","Limit Breaker: leaving the mode for Kamish.","Limit Breaker: saliendo del modo para Kamish.") or tr("Limit Breaker: saindo do modo para a Storm ativa.","Limit Breaker: leaving the mode for the active Storm.","Limit Breaker: saliendo del modo para la Storm activa."))
+            message(tr("Limit Breaker: saindo do modo para ","Limit Breaker: leaving the mode for ","Limit Breaker: saliendo del modo para ")..state.limitBreakerFarmName(priorityEvent)..".")
             return true
         end
         state.autoLeaving=nil
@@ -11277,7 +11349,7 @@ function state.recurringQuestStep()
             api.claimAt=os.clock()+8
             local claim=claims[1];general:Fire({Event="ClaimQuest",Type=claim.bucket,Id=claim.id})
         end
-        message(priorityEvent=="kamish" and tr("Limit Breaker: prioridade do Kamish; missões retomam após o evento.","Limit Breaker: Kamish has priority; quests resume after the event.","Limit Breaker: prioridad de Kamish; las misiones continúan después del evento.") or tr("Limit Breaker: permanecendo na ilha da Storm até o evento terminar.","Limit Breaker: staying on the Storm island until the event ends.","Limit Breaker: permaneciendo en la isla de la Storm hasta que termine el evento."))
+        message(priorityEvent=="storm" and tr("Limit Breaker: permanecendo na ilha da Storm até o evento terminar.","Limit Breaker: staying on the Storm island until the event ends.","Limit Breaker: permaneciendo en la isla de la Storm hasta que termine el evento.") or tr("Limit Breaker: prioridade de ","Limit Breaker: priority belongs to ","Limit Breaker: prioridad de ")..state.limitBreakerFarmName(priorityEvent)..tr("; missões retomam ao terminar.","; quests resume when it finishes.","; las misiones continúan al terminar."))
         return true
     end
     api.hasModePending=false
@@ -12104,7 +12176,8 @@ task.spawn(function()
         task.wait(0.5)
         if not alive then break end
             if state.panic then continue end
-        if state.questPriorityActive and state.questPriorityActive() then releasePumpkinMovement();continue end
+        if state.questPriorityActive and state.questPriorityActive()
+            and not (state.questPriorityAllows and state.questPriorityAllows("pumpkins")) then releasePumpkinMovement();continue end
         if not pumpkin.enabled then releasePumpkinMovement() continue end
         local now = os.clock()
         local prefix = "Coletadas: " .. pumpkin.collected .. "\n"
@@ -12301,6 +12374,15 @@ do
         end
         return false
     end
+    function state.houseLocalDue()
+        local date=tonumber(storage:GetAttribute("DateTime"))
+        local world=tonumber(storage:GetAttribute("World"))
+        if not houses.enabled or not date or not world then return false end
+        if houses.route.waitUntil and date<houses.route.waitUntil and (not houses.route.localOnlyWorld or houses.route.localOnlyWorld==world) then return false end
+        if houses.fighting or houses.busy or houses.confirmation then return true end
+        local route=houses.route.waitUntil and {islands={}} or houses.route
+        return houseWorldHasWork(world,route,houses.visited,date)
+    end
     local function chooseHouseAction(mode, available, previous)
         if #available == 0 then return nil end
         if mode == "AutoTreat" then return table.find(available, "Treat") and "Treat" or available[1] end
@@ -12390,7 +12472,9 @@ do
         if date and retrySoon then nextVisit = math.min(nextVisit or date + retrySoon, date + retrySoon) end
         houses.route.waitUntil = date and (nextVisit or date + 60) or 0
         houses.route.nextWorld, houses.route.target = nil, nil
-        local returning = houseReturn.plan(houses.route, storage:GetAttribute("World"))
+        local localOnly=state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled()
+        houses.route.localOnlyWorld=localOnly and tonumber(storage:GetAttribute("World")) or nil
+        local returning = not localOnly and houseReturn.plan(houses.route, storage:GetAttribute("World"))
         save()
         houses.refresh()
         houses.label.Text = returning and ("Rodada concluída. Voltando ao mundo " .. houses.route.returnWorld .. "...") or message
@@ -12400,7 +12484,8 @@ do
             task.wait(0.5)
             if not alive then break end
             if state.panic then continue end
-            if state.questPriorityActive and state.questPriorityActive() then releaseMovement();houses.label.Text="Auto Quest: coleta pausada.";continue end
+            if state.questPriorityActive and state.questPriorityActive()
+                and not (state.questPriorityAllows and state.questPriorityAllows("houses")) then releaseMovement();houses.label.Text="Auto Quest: coleta pausada.";continue end
             updateHouseTimer()
             if state.kamishDue() then
                 releaseMovement()
@@ -12411,6 +12496,11 @@ do
                 if houses.busy or houses.fighting then releaseMovement() end
                 houses.label.Text = "Desligado."
                 continue
+            end
+            if houses.route.localOnlyWorld and (not (state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled())
+                or houses.route.localOnlyWorld~=tonumber(storage:GetAttribute("World"))) then
+                houses.route.localOnlyWorld,houses.route.waitUntil=nil,nil
+                houses.route.worlds={};save()
             end
             if houses.route.waitUntil then
                 releaseMovement()
@@ -12435,6 +12525,15 @@ do
                 local date = tonumber(storage:GetAttribute("DateTime"))
                 local currentWorld = tonumber(storage:GetAttribute("World"))
                 if not root or not date or not currentWorld or player.GameplayPaused then return end
+                if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled() then
+                    -- Do not follow persisted cross-world routes while Limit Breaker owns travel.
+                    if houses.route.nextWorld or houses.route.returnWorld then
+                        houses.route.nextWorld,houses.route.returnWorld,houses.route.returnAttempts,houses.route.returnNextAt=nil,nil,nil,nil
+                        houses.route.originWorld=currentWorld
+                        if houses.route.target and houses.route.target.world~=currentWorld then houses.route.target=nil end
+                        save()
+                    end
+                end
                 if player:GetAttribute("Mounted") or player:GetAttribute("Swimming") then releaseMovement() return end
                 if type(state.firePrompt) ~= "function" then finish("Interação de proximidade indisponível.") return end
                 for key, untilAt in pairs(houses.visited) do
@@ -12599,6 +12698,9 @@ do
                     end
                     if not target then
                         route.worlds[tostring(currentWorld)] = true
+                        if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled() then
+                            finish("Coleta concluída no mundo atual. Retomando Limit Breaker.");return
+                        end
                         local rank = tonumber(clientData.Get("Rank")) or 0
                         for world = 1, 3 do
                             if not route.worlds[tostring(world)] and rank >= ({0, 7, 20})[world] then
@@ -19230,6 +19332,7 @@ end
 do
 local collection={AutoHauntedHouses=true,AutoPumpkin=true,AutoPumpkinKing=true,AutoKamish=true,AutoGuildBoss=true}
 local eventKinds={AutoWorldBoss="boss",AutoStorm="storm",AutoDeduRaid="dedu",AutoWinterRaid="winter",AutoJungleRaid="jungle",AutoGiantsRaid="giants"}
+local collectionKinds={AutoHauntedHouses="houses",AutoPumpkin="pumpkins",AutoPumpkinKing="pumpkinking",AutoKamish="kamish",AutoGuildBoss="guild"}
 local automations={AutoFarmMobs=true,AutoQuest=true,AutoRebirth=true,AutoDistributeStats=true,AutoDungeon=true,
     RepeatDungeonWithGems=true,AutoLeaveAfterCompletion=true,AutoEquipRunes=true,EquipLastRunes=true,
     AutoTrialCards=true,AutoSellShadows=true,AutoSellSwords=true,AutoBuy=true,FastClick=true,
@@ -19251,6 +19354,33 @@ function state.automationBlockReason(id,enabled)
     local function priority(name)
         return tr("Pausado: prioridade de ","Paused: priority belongs to ","Pausado: prioridad de ")..name.."."
     end
+    if state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled() then
+        if id=="FixedIsland" then
+            local info=autoQuest.fixedIsland and mapInfo[autoQuest.fixedIsland]
+            if info and tonumber(info.World)~=tonumber(storage:GetAttribute("World")) then
+                return tr("Aguardando: escolha uma ilha do mundo atual. Limit Breaker suspende viagens entre mundos.","Waiting: choose an island in the current world. Limit Breaker suspends cross-world travel.","Esperando: elige una isla del mundo actual. Limit Breaker suspende viajes entre mundos.")
+            end
+        end
+        local kind=eventKinds[id] or collectionKinds[id]
+        if kind and not state.limitBreakerLocalAllows(kind) then
+            local raid=state.openRaids and state.openRaids[kind]
+            local world=kind=="kamish" and 3 or raid and raid.world
+            if world and tonumber(world)~=tonumber(storage:GetAttribute("World")) then
+                return tr("Aguardando: atividade no Mundo ","Waiting: activity in World ","Esperando: actividad en Mundo ")..world
+                    ..tr(". Limit Breaker permite apenas o mundo atual.",". Limit Breaker permits only the current world.",". Limit Breaker permite solo el mundo actual.")
+            end
+        end
+        local activity=state.limitBreakerFarmActivity()
+        local names={boss="World Boss",kamish="Nightmare Kamish",guild="Guild Boss",houses="Haunted Houses",pumpkins="Pumpkins",pumpkinking="Pumpkin King",storm="Storm"}
+        local raid=activity and state.openRaids and state.openRaids[activity]
+        local name=names[activity] or raid and raid.name or activity
+        if activity and (id=="FixedIsland" or id=="LimitBreakerTravel" or id=="AutoDungeon" or id=="RepeatDungeonWithGems" or kind and kind~=activity) then
+            return priority(name)
+        end
+        if id=="AutoHauntedHouses" then
+            return tr("Limit Breaker: casas somente no mundo atual; viagens entre mundos suspensas.","Limit Breaker: houses only in the current world; cross-world travel suspended.","Limit Breaker: casas solo en el mundo actual; viajes entre mundos suspendidos.")
+        end
+    end
     if (id=="FixedIsland" or id=="LimitBreakerTravel") and state.limitBreakerStormRequested and state.limitBreakerStormRequested() then
         return tr("Storm ativa: farm na ilha do evento. Viagens retomam ao terminar.","Storm active: farming the event island. Travel resumes when it ends.","Storm activa: farmeando en la isla del evento. Los viajes continúan al terminar.")
     end
@@ -19270,7 +19400,9 @@ function state.automationBlockReason(id,enabled)
             return priority("Storm")
         end
         if id=="AutoBuy" then return state.buyPriorityNotice and state.buyPriorityNotice() end
-        if collection[id] and not (id=="AutoKamish" and state.limitBreakerKamishEnabled and state.limitBreakerKamishEnabled()) then return priority(owner) end
+        if collection[id] and not (state.limitBreakerFarmEnabled and state.limitBreakerFarmEnabled()
+            and state.questPriorityAllows and state.questPriorityAllows(collectionKinds[id]))
+            and not (id=="AutoKamish" and state.limitBreakerKamishEnabled and state.limitBreakerKamishEnabled()) then return priority(owner) end
         local kind=eventKinds[id]
         if kind and state.questPriorityAllows and not state.questPriorityAllows(kind) then return priority(owner) end
         if id=="AutoDungeon" and not questRuntime.modeRequest and not (state.limitBreakerPortalRequested and state.limitBreakerPortalRequested()) then return priority(owner) end
@@ -21769,7 +21901,7 @@ connect(RunService.Heartbeat, function()
             return
         end
     end
-    if autoQuest.enabled and (state.questPriorityActive and state.questPriorityActive() or not state.houses.enabled or state.houses.route.waitUntil ~= nil) and not events.active and not insideDungeon() then
+    if autoQuest.enabled and not state.houses.fighting and (state.questPriorityActive and state.questPriorityActive() or not state.houses.enabled or state.houses.route.waitUntil ~= nil) and not events.active and not insideDungeon() then
         local root = rootPart()
         if questRuntime.destination and root and not player:GetAttribute("Mounted") and not player:GetAttribute("Swimming") then
             state.placeFarmRoot(root,questRuntime.destination)
