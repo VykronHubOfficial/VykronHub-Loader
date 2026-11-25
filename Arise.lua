@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-INFUSION-ONE-UNIQUE-2.0-TEST60-20261124"
+state.build = "VYKRON-RESET-DELAY-PROGRESSION-2.0-TEST61-20261124"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -2048,6 +2048,8 @@ if ok and type(saved) == "table" and saved.userId == player.UserId then
         if saved.autoQuest.resetLastBucket=="Daily" or saved.autoQuest.resetLastBucket=="Weekly" then autoQuest.resetLastBucket=saved.autoQuest.resetLastBucket end
         local interval=tonumber(saved.autoQuest.resetInterval)
         if interval and interval==interval and interval>=0 and interval<=86400 then autoQuest.resetInterval=math.floor(interval) end
+        local completionDelay=tonumber(saved.autoQuest.resetCompletionDelay)
+        if completionDelay and completionDelay==completionDelay and completionDelay>=0 and completionDelay<=60 and completionDelay%1==0 then autoQuest.resetCompletionDelay=completionDelay end
         local due=saved.autoQuest.resetDue
         if type(due)=="table" and type(due.Daily)=="number" and due.Daily==due.Daily and due.Daily>=0 and due.Daily<math.huge
             and type(due.Weekly)=="number" and due.Weekly==due.Weekly and due.Weekly>=0 and due.Weekly<math.huge then autoQuest.resetDue={Daily=due.Daily,Weekly=due.Weekly} end
@@ -10423,15 +10425,30 @@ end
 do
     local shops = require(storage.Indexer.ShopInfo)
     local nativeShop, nextBuy = nil, 0
+    local loadShop,shopPoint
+    local function coinsStamp(data)
+        local ok,value=pcall(function() return data.Have("Coins") end)
+        if not ok then return nil end
+        if type(value)=="table" and value.first~=nil and value.second~=nil then return tostring(value.first)..":"..tostring(value.second) end
+        if type(value)=="number" or type(value)=="string" then return tostring(value) end
+    end
     local function owned(kind, id)
         local inventory = clientData.Get("Inventory", kind .. "s")
         if type(inventory) ~= "table" then return nil end
         for key, entry in pairs(inventory) do
-            if key == id or (type(entry) == "table" and entry.Name == id) then return true end
+            if key == id or (type(entry) == "table" and (entry.Name == id or type(entry.Info)=="table" and entry.Info.Name==id)) then return true end
         end
         return false
     end
     local function bought(shop, id)
+        if nativeShop and type(nativeShop.Bought)=="function" then
+            for _,item in ipairs(nativeShop.Load(shop)) do
+                if item.Id==id then
+                    local value=tonumber(nativeShop.Bought(shop,item))
+                    if value then return value end
+                end
+            end
+        end
         return tonumber(clientData.Get("ShopBought", shop, id)) or 0
     end
     function state.questPurchaseReceipt()
@@ -10448,9 +10465,52 @@ do
             end
             return true
         end
+        local data=loadShop()
+        local now=workspace:GetServerTimeNow()
+        if not data or owned(op.kind,op.id)==nil then return false end
+        if type(clientData.Get("ShopBought"))~="table" then questRuntime.purchaseStatus="Compra pendente: aguardando histórico da loja carregar.";return false end
+        local stamp=coinsStamp(data)
+        if not stamp then questRuntime.purchaseStatus="Compra pendente: saldo indisponível para conferir o pedido.";return false end
+        if type(op.at)~="number" or type(op.beforeCoins)~="string" then
+            op.at=now;op.beforeCoins=stamp;op.attempts=tonumber(op.attempts) or 1
+            if not save() then questRuntime.purchaseStatus="Falha ao salvar a conferência da compra." end
+            return false
+        end
+        if now-op.at<30 then return false end
+        if stamp~=op.beforeCoins then
+            questRuntime.purchaseStatus="Compra pendente: saldo alterado; aguardando inventário ou confirmação da loja. Sem repetir cobrança."
+            return false
+        end
+        if (tonumber(op.attempts) or 1)>=3 then
+            questRuntime.purchaseStatus="Compra sem confirmação após 3 tentativas: confira os requisitos da loja e o inventário."
+            return false
+        end
+        if not autoQuest.enabled or not autoQuest.purchases or state.panic or insideDungeon() or player.GameplayPaused
+            or state.questProfiles and not state.questProfiles.groups(autoQuest).islands then return false end
+        local point=shopPoint(op.shop);local root=rootPart()
+        if not point or not root then questRuntime.purchaseStatus="Compra pendente: aguardando vendedor carregar.";return false end
+        if (root.Position-point).Magnitude>12 then
+            questRuntime.destination=point+Vector3.new(0,3,4)
+            questRuntime.purchaseStatus="Retornando ao vendedor para conferir a compra pendente."
+            return false
+        end
+        local observation=op.observation
+        if not observation or observation.stamp~=stamp then op.observation={stamp=stamp,at=now};return false end
+        if now-observation.at<2 then return false end
+        local item
+        for _,entry in ipairs(data.Load(op.shop)) do if entry.Id==op.id then item=entry;break end end
+        if not item or data.Lock(op.shop,item) or not data.Enough("Coins",data.Total(item,1,1)) then
+            questRuntime.purchaseStatus="Compra pendente: saldo ou requisitos da loja ainda não permitem comprar.";return false
+        end
+        local oldAt,oldAttempts=op.at,op.attempts
+        op.at=now;op.attempts=(tonumber(op.attempts) or 1)+1;op.observation=nil
+        if not save() then op.at,op.attempts=oldAt,oldAttempts;questRuntime.purchaseStatus="Falha ao salvar; compra não reenviada.";return false end
+        nextBuy=os.clock()+2
+        general:Fire({Event="ItemShopAction",Action="Buy",Shop=op.shop,Item=op.id,Amount=1,Rank=1})
+        questRuntime.purchaseStatus="Compra sem efeito confirmado; nova tentativa após conferir saldo e inventário."
         return false
     end
-    local function loadShop()
+    loadShop=function()
         if nativeShop then return nativeShop end
         local scripts = player:FindFirstChild("PlayerScripts")
         local ui = scripts and scripts:FindFirstChild("NewUI", true)
@@ -10458,7 +10518,7 @@ do
         nativeShop = require(ui.Screens.ItemShop.Data)
         return nativeShop
     end
-    local function shopPoint(shop)
+    shopPoint=function(shop)
         local extra = workspace:FindFirstChild("__Extra")
         local interactions = extra and extra:FindFirstChild("__Interactions")
         local folder = interactions and interactions:FindFirstChild("Shops")
@@ -10493,11 +10553,13 @@ do
         end
     end
     function state.questShopStep(map, islandPosition)
+        questRuntime.purchaseNeedsCoins=nil
+        questRuntime.purchaseStatus=nil
         if state.panic or not autoQuest.enabled or not autoQuest.purchases or insideDungeon() then return false end
         state.questPurchaseReceipt()
         if autoQuest.purchasePending then
-            questRuntime.purchaseStatus = "Compra aguardando confirmação: " .. autoQuest.purchasePending.id .. ". Sem repetir cobrança."
-            return false
+            questRuntime.purchaseStatus = questRuntime.purchaseStatus or ("Compra aguardando confirmação: " .. autoQuest.purchasePending.id .. ". Sem repetir cobrança.")
+            return questRuntime.destination~=nil,questRuntime.purchaseStatus
         end
         local root = rootPart()
         if not root or player.GameplayPaused then return false end
@@ -10537,6 +10599,8 @@ do
                     if data.Enough("Coins", price) then
                         entry.item, entry.price = item, price
                         table.insert(affordable, entry)
+                    else
+                        questRuntime.purchaseNeedsCoins=true
                     end
                     break
                 end
@@ -10566,7 +10630,8 @@ do
             questRuntime.destination = destination + Vector3.new(0, 3, 4)
             return true, "Indo comprar: " .. entry.id .. "."
         end
-        local op = {shop = entry.shop, id = entry.id, kind = entry.kind, beforeBought = bought(entry.shop, entry.id)}
+        local op = {shop = entry.shop, id = entry.id, kind = entry.kind, beforeBought = bought(entry.shop, entry.id),
+            at=workspace:GetServerTimeNow(),beforeCoins=coinsStamp(data),attempts=1}
         autoQuest.purchasePending = op
         if not save() then autoQuest.purchasePending = nil return false, "Compra adiada: não foi possível salvar o pedido." end
         if state.panic then autoQuest.purchasePending = nil save() return false end
@@ -11719,8 +11784,12 @@ end
 
     local lastKey, sent = nil, {}
     local function request(key, payload)
-        if sent[key] then return end
-        sent[key] = true
+        -- These actions are native/idempotent; a lost acknowledgement must not
+        -- permanently suppress accepting, claiming, spawning or world travel.
+        local now=os.clock()
+        local previous=sent[key]
+        if type(previous)=="number" and now-previous<8 then return end
+        sent[key] = now
         general:Fire(payload)
     end
     task.spawn(function()
@@ -11840,6 +11909,15 @@ end
                 if not goal then questStatus.Text = prefix .. "Aguardando confirmação da conclusão..." return end
                 prefix ..= (goalInfo.Name or goal) .. ": " .. current .. "/" .. maximum .. "\n"
                 if goal == "WeaponsBought" or goal == "MountsBought" then
+                    if questRuntime.purchaseNeedsCoins then
+                        questRuntime.filter={kind="normal",map=entry.map,order=entry.order,info=enemies}
+                        questRuntime.combat=true
+                        if not nearest(enemyFolder(),root.Position,nil,questRuntime.filter) then
+                            questRuntime.destination=position+Vector3.new(0,4,0)
+                        end
+                        questStatus.Text=prefix.."Farmando moedas para a compra exigida pela missão."
+                        return
+                    end
                     questStatus.Text = prefix .. (questRuntime.purchaseStatus or "Aguardando confirmação das compras da missão.")
                     return
                 end
@@ -13659,6 +13737,19 @@ function api.canAffordReset(stock)
     end
     return false
 end
+function api.setCompletionDelay(value)
+    local seconds=tonumber(value)
+    if not seconds or seconds~=seconds or seconds<0 or seconds>60 or seconds%1~=0 then return false end
+    local previous=autoQuest.resetCompletionDelay
+    autoQuest.resetCompletionDelay=seconds
+    if not save() then
+        autoQuest.resetCompletionDelay=previous
+        api.status=tr("Auto Reset: falha ao salvar a espera.","Auto Reset: could not save completion delay.","Auto Reset: error al guardar la espera.")
+        return false
+    end
+    api.emptyAt={}
+    return true
+end
 function api.setScope(scope)
     if scope~="daily" and scope~="weekly" and scope~="both" then return false end
     local previous,previousDue=autoQuest.resetScope,autoQuest.resetDue
@@ -13796,7 +13887,8 @@ function api.step(now)
             api.status=tr("Auto Reset: resgatando recompensas de ","Auto Reset: claiming rewards for ","Auto Reset: recogiendo recompensas de ")..bucket;return
         elseif (status=="empty" or status=="unavailable") and interval==0 or interval>0 and (status=="working" or status=="unavailable" or status=="empty") and now>=(autoQuest.resetDue[bucket] or now+interval) then
             local since=api.emptyAt[bucket] or now;api.emptyAt[bucket]=since
-            if interval==0 and now-since<3 then api.status=tr("Auto Reset: conferindo se todas as recompensas foram resgatadas.","Auto Reset: checking that all rewards were claimed.","Auto Reset: comprobando que se recogieron todas las recompensas.");continue end
+            local completionDelay=autoQuest.resetCompletionDelay or 1
+            if interval==0 and now-since<completionDelay then api.status=tr("Auto Reset: conferindo se todas as recompensas foram resgatadas.","Auto Reset: checking that all rewards were claimed.","Auto Reset: comprobando que se recogieron todas las recompensas.");continue end
             local product=bucket=="Daily" and "DailyQuestReset" or "WeeklyQuestReset"
             local info=products and products[product]
             local price=info and tonumber(info.Promo==true and info.PromoV or info.Price)
@@ -15895,13 +15987,19 @@ state.hubParts.questProfiles=function(H)
         for _,key in ipairs({"Action","MirrorText","QuestScopeLabel"}) do b:SetAttribute(key,nil) end
         b.Position=UDim2.fromOffset(12,y);b.Size=UDim2.new(1,-24,0,32);b.Parent=parent;b.Title.Text=text or "";return b
     end
-    local resetCard=frame("ResetSettings",page,8,350)
+    local resetCard=frame("ResetSettings",page,8,400)
     for name,y in pairs({Row_AutoResetQuests=8,Act_QuestResetScope=66,Row_QuestResetInterval=104}) do local c=panel[name];c.Parent=resetCard;c.Position=UDim2.fromOffset(name=="Act_QuestResetScope" and 44 or 8,y) end
+    local delayRow=resetCard.Row_QuestResetInterval:Clone();delayRow.Name="Row_QuestResetCompletionDelay";delayRow.Position=UDim2.fromOffset(8,146);delayRow.Parent=resetCard
+    delayRow.Seconds.Text=tostring(autoQuest.resetCompletionDelay or 1)
+    connectUI(delayRow.Seconds,function()
+        state.questReset.setCompletionDelay(delayRow.Seconds.Text)
+        delayRow.Seconds.Text=tostring(autoQuest.resetCompletionDelay or 1)
+    end,delayRow.Seconds.FocusLost)
     local resetDefaultCaption=resetCard.Row_AutoResetQuests.Caption.Text
-    local refill=resetCard.Row_AutoResetQuests:Clone();refill.Name="Row_TicketRefill";refill.Position=UDim2.fromOffset(8,154);refill.Parent=resetCard
-    local difficulty=button("RefillDifficulty",resetCard,212)
-    local farmTeam=button("RefillFarmTeam",resetCard,254)
-    local returnTeam=button("RefillReturnTeam",resetCard,296)
+    local refill=resetCard.Row_AutoResetQuests:Clone();refill.Name="Row_TicketRefill";refill.Position=UDim2.fromOffset(8,204);refill.Parent=resetCard
+    local difficulty=button("RefillDifficulty",resetCard,262)
+    local farmTeam=button("RefillFarmTeam",resetCard,304)
+    local returnTeam=button("RefillReturnTeam",resetCard,346)
     local function setRefill(key,id)
         local ok,problem=pcall(state.refillTeams.change,key,id)
         if not ok then state.refillTeams.status=tr("Falha ao alterar opção da Trial: ","Could not change Trial option: ","No se pudo cambiar la opción de Trial: ")..tostring(problem) end
@@ -15923,13 +16021,15 @@ state.hubParts.questProfiles=function(H)
     for _,child in ipairs(panel:GetChildren()) do if child:IsA("GuiObject") and child~=template and child.Position.Y.Offset>=bottom+142 then child.Position-=UDim2.fromOffset(0,56) end end
     panel.Size-=UDim2.fromOffset(0,56)
     local row=panel.Row_AutoQuest:Clone();row.Name="Row_LimitBreaker";row.Position=UDim2.fromOffset(8,bottom+5);row.Parent=panel
+    local rowCaptionColor=row.Caption.TextColor3
     row.Toggle:SetAttribute("Bind",nil);row.Toggle:SetAttribute("Id",nil)
     local open=button("Act_LimitBreaker",panel,bottom+48)
     open.Position=UDim2.fromOffset(44,bottom+48);open.Size=UDim2.new(1,-60,0,30)
-    local missionCard=frame("MissionSettings",page,370,146)
+    local missionCard=frame("MissionSettings",page,420,146)
     local daily=button("Daily",missionCard,8);local weekly=button("Weekly",missionCard,50);local strategy=button("Strategy",missionCard,92)
-    local fixedCard=frame("FixedIslandSettings",page,528,104)
+    local fixedCard=frame("FixedIslandSettings",page,578,104)
     local fixedRow=refill:Clone();fixedRow.Name="Row_FixedIsland";fixedRow.Position=UDim2.fromOffset(8,4);fixedRow.Parent=fixedCard
+    local fixedCaptionColor=fixedRow.Caption.TextColor3
     local fixedButton=button("FixedIsland",fixedCard,66)
     local function chooseFixedIsland()
         local options={}
@@ -15944,9 +16044,9 @@ state.hubParts.questProfiles=function(H)
         local ok=lb.change(function(q) q.fixedIslandEnabled=not q.fixedIslandEnabled end)
         if ok and autoQuest.fixedIslandEnabled and not autoQuest.fixedIsland then chooseFixedIsland() end
     end)
-    local activity=frame("QuestStatus",page,644,148)
+    local activity=frame("QuestStatus",page,694,148)
     local status=make("TextLabel",{Name="Status",Size=UDim2.new(1,-24,1,-16),Position=UDim2.fromOffset(12,8),BackgroundTransparency=1,Text="",TextColor3=colors.text,Font=Enum.Font.GothamMedium,TextSize=12,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top},activity)
-    page.CanvasSize=UDim2.fromOffset(0,806)
+    page.CanvasSize=UDim2.fromOffset(0,856)
     local listPage=page:Clone();listPage.Name="LimitBreakerMissions"
     for _,child in ipairs(listPage:GetChildren()) do child:Destroy() end
     listPage.Visible=false;listPage.Parent=hub.pages
@@ -16053,14 +16153,26 @@ state.hubParts.questProfiles=function(H)
     end
     api.menu=progression
     local function update()
+        delayRow.Title.Text=tr("Espera após concluir (s) · 0 = imediato","Wait after completion (s) · 0 = immediate","Espera al completar (s) · 0 = inmediato")
+        delayRow.Title.TextSize=14
         fixedRow.Title.Text=tr("Ilha fixa","Fixed island","Isla fija")
         fixedRow.Caption.Text=tr("Mobs somente na ilha escolhida.","Mobs only on the selected island.","Enemigos solo en la isla elegida.")
+        local fixedReason=state.automationBlockReason and state.automationBlockReason("FixedIsland",autoQuest.fixedIslandEnabled)
+        fixedRow.Toggle:SetAttribute("PauseReason",fixedReason)
+        fixedRow.Caption.Text=fixedReason or fixedRow.Caption.Text
+        fixedRow.Caption.TextColor3=fixedReason and Color3.fromRGB(255,196,90) or fixedCaptionColor
+        fixedRow.Caption.TextSize=14;fixedRow.Caption.TextWrapped=true
         H.paint(fixedRow.Toggle,autoQuest.fixedIslandEnabled==true)
         local island=autoQuest.fixedIsland and mapInfo[autoQuest.fixedIsland]
         fixedButton.Title.Text=tr("Ilha: ","Island: ","Isla: ")..tostring(island and island.Name or autoQuest.fixedIsland or tr("Selecionar","Select","Elegir")).." >"
         template.Title.Text=tr("Progressão >","Progression >","Progresión >")
         H.paint(panel.Row_AutoQuest.Toggle,autoQuest.progressionEnabled==true)
         row.Title.Text="Limit Breaker";row.Caption.Text=tr("Missões, mobs e resets integrados.","Integrated quests, mobs and resets.","Misiones, mobs y reinicios integrados.")
+        local travelReason=state.automationBlockReason and state.automationBlockReason("LimitBreakerTravel",autoQuest.limitBreakerEnabled)
+        row.Toggle:SetAttribute("PauseReason",travelReason)
+        row.Caption.Text=travelReason or row.Caption.Text
+        row.Caption.TextColor3=travelReason and Color3.fromRGB(255,196,90) or rowCaptionColor
+        row.Caption.TextSize=14;row.Caption.TextWrapped=true
         H.paint(row.Toggle,autoQuest.limitBreakerEnabled==true)
         open.Title.Text=tr("Missões e prioridades >","Quests and priorities >","Misiones y prioridades >")
         daily.Title.Text=tr("Organizar diárias >","Organize daily >","Organizar diarias >");weekly.Title.Text=tr("Organizar semanais >","Organize weekly >","Organizar semanales >")
@@ -19096,7 +19208,7 @@ local automations={AutoFarmMobs=true,AutoQuest=true,AutoRebirth=true,AutoDistrib
     RepeatDungeonWithGems=true,AutoLeaveAfterCompletion=true,AutoEquipRunes=true,EquipLastRunes=true,
     AutoTrialCards=true,AutoSellShadows=true,AutoSellSwords=true,AutoBuy=true,FastClick=true,
     AutoSpeed=true,AutoExitFloor=true,AutoDodge=true,AutoReconnect=true,AntiAFK=true,SwitchTeams=true,AutoResetQuests=true,TicketRefill=true,
-    ShadowRankUp=true,ShadowReroll=true,ShadowInfusion=true,ShadowIndexDestroy=true}
+    ShadowRankUp=true,ShadowReroll=true,ShadowInfusion=true,ShadowIndexDestroy=true,FixedIsland=true,LimitBreakerTravel=true}
 local function tr(pt,en,es) return uiState.language=="PT" and pt or uiState.language=="ES" and es or en end
 function state.automationPriorityName()
     local limit=autoQuest.splitQuests and autoQuest.limitBreakerEnabled or autoQuest.profile=="limitbreaker"
@@ -19112,6 +19224,17 @@ function state.automationBlockReason(id,enabled)
     local owner=state.automationPriorityName()
     local function priority(name)
         return tr("Pausado: prioridade de ","Paused: priority belongs to ","Pausado: prioridad de ")..name.."."
+    end
+    if (id=="FixedIsland" or id=="LimitBreakerTravel") and state.limitBreakerStormRequested and state.limitBreakerStormRequested() then
+        return tr("Storm ativa: farm na ilha do evento. Viagens retomam ao terminar.","Storm active: farming the event island. Travel resumes when it ends.","Storm activa: farmeando en la isla del evento. Los viajes continúan al terminar.")
+    end
+    if id=="AutoQuest" then
+        if autoQuest.splitQuests and autoQuest.limitBreakerEnabled then return priority("Limit Breaker") end
+        if state.leaving or state.autoLeaving then return priority(tr("saída do modo","leaving the mode","salida del modo")) end
+        if events and events.active then return priority(tostring(events.active)) end
+        if insideDungeon() and not (autoQuest.journey and not autoQuest.journey.bucket) then
+            return tr("Pausado: uma dungeon ou modo está em andamento.","Paused: a dungeon or mode is in progress.","Pausado: hay una mazmorra o modo en curso.")
+        end
     end
     if quest then
         if (id=="AutoDungeon" or id=="RepeatDungeonWithGems") and state.limitBreakerStormRequested and state.limitBreakerStormRequested() then
