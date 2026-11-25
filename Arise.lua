@@ -51,7 +51,7 @@ local env = getgenv()
 local previous = env.__VykronHub
 if previous and type(previous.destroy) == "function" then previous.destroy() end
 local state = {enabled = false, target = nil, map = nil, kills = 0, attacks = 0}
-state.build = "VYKRON-RESET-DELAY-PROGRESSION-2.0-TEST61-20261124"
+state.build = "VYKRON-LB-KAMISH-2.0-TEST62-20261124"
 state.gearTomes = {enabled = false, amount = 1, reserve = 0}
 state.codeClaims = {}
 state.craftRecipes = {
@@ -2420,7 +2420,8 @@ function state.kamishScheduleDue(config,now,bossPresent)
     return spawn~=nil and config.handledSpawn~=spawn
 end
 function state.kamishDue()
-    if state.questPriorityActive and state.questPriorityActive() then return false end
+    if state.questPriorityActive and state.questPriorityActive()
+        and not (state.questPriorityAllows and state.questPriorityAllows("kamish")) then return false end
     return state.kamishScheduleDue(state.kamish,workspace:GetServerTimeNow(),state.kamishBoss()~=nil)
 end
 -- Follow the true replicated Baizen marker; clone HP snapshots are mirrored.
@@ -4577,7 +4578,9 @@ function state.pumpkinCollectionDue()
     return false
 end
 function state.collectionPriority()
-    if state.questPriorityActive and state.questPriorityActive() then return nil end
+    if state.questPriorityActive and state.questPriorityActive() then
+        return state.limitBreakerKamishRequested and state.limitBreakerKamishRequested() and "kamish" or nil
+    end
     if state.kamishDue() then return "kamish" end
     if state.houseCollectionDue() then return "houses" end
     if state.kingDue() then return "pumpkinking" end
@@ -9084,7 +9087,8 @@ do
         if not state.syncKeyAFK(keyWanted) then owned.status="Auto Keys: aguardando confirmar Usar Dungeon Keys no AFK nativo.";return end
         if not forceRestore and quest then
             local mode=autoQuest.journey and autoQuest.journey.mode or "waiting"
-            if state.limitBreakerStormRequested and state.limitBreakerStormRequested() then mode="waiting" end
+            if state.limitBreakerStormRequested and state.limitBreakerStormRequested()
+                or state.limitBreakerKamishRequested and state.limitBreakerKamishRequested() then mode="waiting" end
             state.syncQuestAFK(mode);owned.status="Auto Quest: AFK limitado ao modo exigido ("..mode..").";return
         end
         local wanted = not forceRestore and not state.panic and ((dungeon.enabled == true and dungeon.mode == "infernal")
@@ -9179,7 +9183,14 @@ do
         local displaySpawn = spawn or nextSpawn
         local spawnMinute = state.kamishSpawnMinute(displaySpawn)
         local prepareMinute = state.kamishPrepareMinute(displaySpawn)
-        if state.questPriorityActive and state.questPriorityActive() then release();state.eventDestination=nil;state.kamish.status="Auto Quest: Kamish pausado.";return end
+        if state.questPriorityActive and state.questPriorityActive()
+            and not (state.questPriorityAllows and state.questPriorityAllows("kamish")) then
+            local owned=state.kamishTakingOver or events.active=="kamish"
+            release();if owned then state.eventDestination=nil end
+            state.kamish.status=state.limitBreakerStormRequested and state.limitBreakerStormRequested()
+                and "Kamish: aguardando a Storm terminar." or "Auto Quest: Kamish pausado."
+            return
+        end
         if not state.kamish.enabled or state.panic then
             state.kamish.status = state.panic and "Paused." or "Off. · next " .. state.kamishSpawnMinute(nextSpawn) .. " · " .. state.kamishClock()
             release() return
@@ -10921,6 +10932,7 @@ local function message(text)
 end
 function state.questWantsEvent(kind)
     if state.limitBreakerStormRequested and state.limitBreakerStormRequested() then return kind=="storm" end
+    if state.limitBreakerKamishRequested and state.limitBreakerKamishRequested() then return kind=="kamish" end
     return policy.enabled(autoQuest) and not state.panic and api.demands[kind]==true
 end
 function state.questPriorityActive()
@@ -10928,6 +10940,7 @@ function state.questPriorityActive()
 end
 function state.questPriorityAllows(kind)
     if kind=="storm" and state.limitBreakerStormEnabled and state.limitBreakerStormEnabled() then return true end
+    if kind=="kamish" and state.limitBreakerKamishEnabled and state.limitBreakerKamishEnabled() then return true end
     return not state.questPriorityActive() or state.questWantsEvent(kind)
 end
 function state.limitBreakerStormEnabled()
@@ -10941,6 +10954,17 @@ function state.limitBreakerStormRequested()
     local map=events.currentStormMap
     local info=map and mapInfo[map]
     return type(info)=="table" and tonumber(info.World)==tonumber(storage:GetAttribute("World"))
+end
+function state.limitBreakerKamishEnabled()
+    local limit=autoQuest.profile=="limitbreaker"
+    if autoQuest.splitQuests then limit=autoQuest.limitBreakerEnabled==true end
+    return limit and policy.enabled(autoQuest) and type(state.kamish)=="table" and state.kamish.enabled==true
+        and not state.panic and not state.stopped and not state.limitBreakerStormRequested()
+end
+function state.limitBreakerKamishRequested()
+    if not state.limitBreakerKamishEnabled() or (tonumber(clientData.Get("Rank")) or 0)<20 then return false end
+    if type(state.keyRunBlocksExit)=="function" and state.keyRunBlocksExit() then return false end
+    return type(state.kamishDue)=="function" and state.kamishDue()==true
 end
 function state.questTicketStock()
     local inventory=clientData.Get("Inventory","Items")
@@ -10958,7 +10982,7 @@ function state.limitBreakerPortalEnabled()
 end
 function state.limitBreakerPortalRequested()
     if not state.limitBreakerPortalEnabled() or state.panic or state.stopped or state.autoLeaving or autoQuest.journey
-        or state.limitBreakerStormRequested() then return false end
+        or state.limitBreakerStormRequested() or state.limitBreakerKamishRequested() then return false end
     local stock,capacity=state.questTicketStock()
     local reset=state.questReset
     local refill=(not autoQuest.splitQuests or autoQuest.resetQuests==true) and (not state.questProfiles or state.questProfiles.refill(autoQuest))
@@ -11001,7 +11025,7 @@ function state.questTrialRefillEnded()
     return ok and type(schedule)=="table" and schedule.Open==false
 end
 function state.questTrialRefillPending()
-    if state.limitBreakerStormRequested() then return false end
+    if state.limitBreakerStormRequested() or state.limitBreakerKamishRequested() then return false end
     local job=autoQuest.journey
     if not policy.enabled(autoQuest) or state.panic or not job or job.bucket~="TicketFarm"
         or job.mode~="trial" or not insideDungeon() or not state.recurringRunMatches(job) then return false end
@@ -11231,19 +11255,21 @@ function state.recurringQuestStep()
         message(tr("Auto Quest: aguardando confirmação do renascimento.","Auto Quest: waiting for Rebirth confirmation.","Auto Quest: esperando confirmación del renacimiento."));return true
     end
     if state.panic or player.GameplayPaused or not rootPart() then return false end
+    if api.priorityEventExit and not insideDungeon() then state.autoLeaving=nil;api.priorityEventExit=nil end
     if api.testPersist then
         local ok,result=pcall(api.testPersist)
         if not ok or result==false then return false end
     end
     local groups,claims,blocked=policy.scan(definitions,clientData.Get,autoQuest)
     api.groups,api.blocked=groups,blocked
-    if state.limitBreakerStormRequested() then
-        api.demands={storm=true};api.hasModePending=true
+    local priorityEvent=state.limitBreakerStormRequested() and "storm" or state.limitBreakerKamishRequested() and "kamish"
+    if priorityEvent then
+        api.demands={[priorityEvent]=true};api.hasModePending=true
         questRuntime.filter=nil;questRuntime.destination=nil;questRuntime.modeRequest=nil;questRuntime.combat=false
         if insideDungeon() then
-            state.autoLeaving=true
+            state.autoLeaving=true;api.priorityEventExit=true
             if os.clock()>=(api.exitAt or 0) then api.exitAt=os.clock()+8;state.requestDungeonExit() end
-            message(tr("Limit Breaker: saindo do modo para a Storm ativa.","Limit Breaker: leaving the mode for the active Storm.","Limit Breaker: saliendo del modo para la Storm activa."))
+            message(priorityEvent=="kamish" and tr("Limit Breaker: saindo do modo para o Kamish.","Limit Breaker: leaving the mode for Kamish.","Limit Breaker: saliendo del modo para Kamish.") or tr("Limit Breaker: saindo do modo para a Storm ativa.","Limit Breaker: leaving the mode for the active Storm.","Limit Breaker: saliendo del modo para la Storm activa."))
             return true
         end
         state.autoLeaving=nil
@@ -11251,7 +11277,7 @@ function state.recurringQuestStep()
             api.claimAt=os.clock()+8
             local claim=claims[1];general:Fire({Event="ClaimQuest",Type=claim.bucket,Id=claim.id})
         end
-        message(tr("Limit Breaker: permanecendo na ilha da Storm até o evento terminar.","Limit Breaker: staying on the Storm island until the event ends.","Limit Breaker: permaneciendo en la isla de la Storm hasta que termine el evento."))
+        message(priorityEvent=="kamish" and tr("Limit Breaker: prioridade do Kamish; missões retomam após o evento.","Limit Breaker: Kamish has priority; quests resume after the event.","Limit Breaker: prioridad de Kamish; las misiones continúan después del evento.") or tr("Limit Breaker: permanecendo na ilha da Storm até o evento terminar.","Limit Breaker: staying on the Storm island until the event ends.","Limit Breaker: permaneciendo en la isla de la Storm hasta que termine el evento."))
         return true
     end
     api.hasModePending=false
@@ -19228,6 +19254,9 @@ function state.automationBlockReason(id,enabled)
     if (id=="FixedIsland" or id=="LimitBreakerTravel") and state.limitBreakerStormRequested and state.limitBreakerStormRequested() then
         return tr("Storm ativa: farm na ilha do evento. Viagens retomam ao terminar.","Storm active: farming the event island. Travel resumes when it ends.","Storm activa: farmeando en la isla del evento. Los viajes continúan al terminar.")
     end
+    if (id=="FixedIsland" or id=="LimitBreakerTravel" or id=="AutoDungeon" or id=="RepeatDungeonWithGems")
+        and state.limitBreakerKamishRequested and state.limitBreakerKamishRequested() then return priority("Nightmare Kamish") end
+    if id=="AutoKamish" and state.limitBreakerStormRequested and state.limitBreakerStormRequested() then return priority("Storm") end
     if id=="AutoQuest" then
         if autoQuest.splitQuests and autoQuest.limitBreakerEnabled then return priority("Limit Breaker") end
         if state.leaving or state.autoLeaving then return priority(tr("saída do modo","leaving the mode","salida del modo")) end
@@ -19241,7 +19270,7 @@ function state.automationBlockReason(id,enabled)
             return priority("Storm")
         end
         if id=="AutoBuy" then return state.buyPriorityNotice and state.buyPriorityNotice() end
-        if collection[id] then return priority(owner) end
+        if collection[id] and not (id=="AutoKamish" and state.limitBreakerKamishEnabled and state.limitBreakerKamishEnabled()) then return priority(owner) end
         local kind=eventKinds[id]
         if kind and state.questPriorityAllows and not state.questPriorityAllows(kind) then return priority(owner) end
         if id=="AutoDungeon" and not questRuntime.modeRequest and not (state.limitBreakerPortalRequested and state.limitBreakerPortalRequested()) then return priority(owner) end
