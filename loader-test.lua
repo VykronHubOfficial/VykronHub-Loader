@@ -12,7 +12,7 @@ repeat task.wait(0.25) until licensed() and env.__VykronHub and env.__VykronHub.
 assert(licensed(),"Ative sua key no loader normal para abrir o teste.")
 assert(type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function","O executor precisa suportar arquivos para continuar o teste apos teleportes.")
 for _,path in ipairs({"VykronHub","VykronHub/Tests"}) do pcall(makefolder,path) end
-local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/test-quests/"
+local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/3655c0a385689ef79ffabc0e974a5a0446701d4b/"
 local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test61")
 assert(runtime:find("VYKRON-RESET-DELAY-PROGRESSION-2.0-TEST61-20261124",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
 local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test61")
