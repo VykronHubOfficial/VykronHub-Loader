@@ -1,4 +1,4 @@
--- Licensed TEST68 bootstrap; preserves the normal key flow and installs local test continuity.
+-- Licensed TEST69 bootstrap; preserves the normal key flow and installs local test continuity.
 local env=getgenv()
 local function licensed()
     local ok,result=pcall(function() return env.__VykronHubLicense and env.__VykronHubLicense:isValid() end)
@@ -12,12 +12,12 @@ repeat task.wait(0.25) until licensed() and env.__VykronHub and env.__VykronHub.
 assert(licensed(),"Ative sua key no loader normal para abrir o teste.")
 assert(type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function","O executor precisa suportar arquivos para continuar o teste apos teleportes.")
 for _,path in ipairs({"VykronHub","VykronHub/Tests"}) do pcall(makefolder,path) end
-local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/627dcc709dc185cf831442a1164d383a5ff195c7/"
+local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/test-quests/"
 local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test68")
-assert(runtime:find("VYKRON-UTILITIES-FASTCLICK-2.0-TEST68-20261126",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
+assert(runtime:find("VYKRON-NATIVE-MODE-AFK-2.0-TEST69-20261126",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
 local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test68")
-assert(starter:find("TEST68",1,true),"Starter de teste ainda nao atualizado.")
+assert(starter:find("TEST69",1,true),"Starter de teste ainda nao atualizado.")
 writefile("VykronHub/Tests/Arise-2.0-test68.lua",runtime)
 writefile("VykronHub/Tests/Iniciar-teste-2.0-test68.lua",starter)
 assert(loadstring(starter))()
-print("[VykronHub TEST68] Utilidades: times, bosses, velocidades e Fast Click. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
+print("[VykronHub TEST69] Utilidades: times, bosses, velocidades e Fast Click. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
