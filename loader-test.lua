@@ -1,4 +1,4 @@
--- Licensed TEST67 bootstrap; preserves the normal key flow and installs local test continuity.
+-- Licensed TEST68 bootstrap; preserves the normal key flow and installs local test continuity.
 local env=getgenv()
 local function licensed()
     local ok,result=pcall(function() return env.__VykronHubLicense and env.__VykronHubLicense:isValid() end)
@@ -12,12 +12,12 @@ repeat task.wait(0.25) until licensed() and env.__VykronHub and env.__VykronHub.
 assert(licensed(),"Ative sua key no loader normal para abrir o teste.")
 assert(type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function","O executor precisa suportar arquivos para continuar o teste apos teleportes.")
 for _,path in ipairs({"VykronHub","VykronHub/Tests"}) do pcall(makefolder,path) end
-local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/8c6a6ac3d6feb6bc90ae21e7236055ed1c07f369/"
-local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test67")
-assert(runtime:find("VYKRON-RIFT-STRATEGIES-2.0-TEST67-20261125",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
-local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test67")
-assert(starter:find("TEST67",1,true),"Starter de teste ainda nao atualizado.")
-writefile("VykronHub/Tests/Arise-2.0-test67.lua",runtime)
-writefile("VykronHub/Tests/Iniciar-teste-2.0-test67.lua",starter)
+local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/test-quests/"
+local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test68")
+assert(runtime:find("VYKRON-UTILITIES-FASTCLICK-2.0-TEST68-20261126",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
+local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test68")
+assert(starter:find("TEST68",1,true),"Starter de teste ainda nao atualizado.")
+writefile("VykronHub/Tests/Arise-2.0-test68.lua",runtime)
+writefile("VykronHub/Tests/Iniciar-teste-2.0-test68.lua",starter)
 assert(loadstring(starter))()
-print("[VykronHub TEST67] Auto Rift: ilha fixa, rota e checkpoints configuraveis. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
+print("[VykronHub TEST68] Utilidades: times, bosses, velocidades e Fast Click. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
