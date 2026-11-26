@@ -12,7 +12,7 @@ repeat task.wait(0.25) until licensed() and env.__VykronHub and env.__VykronHub.
 assert(licensed(),"Ative sua key no loader normal para abrir o teste.")
 assert(type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function","O executor precisa suportar arquivos para continuar o teste apos teleportes.")
 for _,path in ipairs({"VykronHub","VykronHub/Tests"}) do pcall(makefolder,path) end
-local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/test-quests/"
+local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/627dcc709dc185cf831442a1164d383a5ff195c7/"
 local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test68")
 assert(runtime:find("VYKRON-UTILITIES-FASTCLICK-2.0-TEST68-20261126",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
 local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test68")
