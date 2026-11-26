@@ -155,7 +155,27 @@ if resume and env.__VykronHubResumeJob ~= game.JobId then
 end
 return session
 ]====]
-local requestHttp = request or http_request or (syn and syn.request) or (http and http.request)
+-- LOADER-NETWORK-TEST1: record only transport metadata, never payloads or replies.
+local transports={}
+local function addTransport(name,fn)
+    if type(fn)~="function" then return end
+    for _,entry in ipairs(transports) do if entry.fn==fn then return end end
+    transports[#transports+1]={name=name,fn=fn}
+end
+addTransport("request",request);addTransport("http_request",http_request)
+addTransport("syn.request",syn and syn.request);addTransport("http.request",http and http.request)
+local requestHttp=transports[1] and transports[1].fn
+local networkHistory={}
+local function networkNote(route,result,transport,started,status)
+    local safeRoute=type(route)=="string" and route:match("^/v1/[%w/_-]+$") and route or "other"
+    networkHistory[#networkHistory+1]={stage=safeRoute,result=result,transport=transport or "none",
+        elapsed=math.floor((os.clock()-started)*1000),status=tonumber(status) or 0}
+    if #networkHistory>20 then table.remove(networkHistory,1) end
+    local report={version="LOADER-NETWORK-TEST1",utc=os.date("!%Y-%m-%dT%H:%M:%SZ"),requests=networkHistory}
+    env.__VykronHubLoaderNetwork=report
+    pcall(function() writefile("VykronHub/loader-network.json",Http:JSONEncode(report)) end)
+end
+
 local function readJson(path)
     local ok, value = pcall(function() return Http:JSONDecode(readfile(path)) end)
     return ok and type(value) == "table" and value or nil
@@ -310,10 +330,11 @@ local status = label(panel, "O prazo começa no primeiro uso da key.", 24, 347, 
 status.TextWrapped = true
 eye.Activated:Connect(function()
     hideKey = not hideKey
+    preferences.hideKey = hideKey
     updateKeyMask()
     local saved = pcall(function()
         if type(makefolder) == "function" then pcall(makefolder, "VykronHub") end
-        writefile("VykronHub/loader-ui.json", Http:JSONEncode({hideKey = hideKey}))
+        writefile("VykronHub/loader-ui.json", Http:JSONEncode({hideKey = hideKey,language = preferences.language}))
     end)
     if not saved then status.Text = "Preferência aplicada nesta sessão; não foi possível salvar." end
 end)
@@ -341,6 +362,120 @@ discord.Activated:Connect(function()
     else status.Text = DISCORD_INVITE end
 end)
 label(panel, "Sua key salva será validada automaticamente.", 24, 426, 412, 16, 10, muted)
+-- LOADER-EN-PT-TEST1. Never localize TextBox.Text: it may contain a license key.
+local function installLoaderLocale(root, preferences, persist)
+    local english={
+        ["A C E S S O"]="A C C E S S",["Bem-vindo à Vykron Hub"]="Welcome to Vykron Hub",
+        ["Valide sua key para acessar a hub."]="Validate your key to access the hub.",
+        ["Cole sua key"]="Paste your key",["VALIDAR E ENTRAR"]="VALIDATE AND ENTER",["VALIDANDO..."]="VALIDATING...",
+        ["O prazo começa no primeiro uso da key."]="Your key duration starts on its first use.",
+        ["Sua key salva será validada automaticamente."]="Your saved key will be validated automatically.",
+        ["Discord · Obter key"]="Discord · Get key",["Obter key"]="Get key",
+        ["Preferência aplicada nesta sessão; não foi possível salvar."]="Preference applied for this session; it could not be saved.",
+        ["Convite do Discord aberto."]="Discord invite opened.",
+        ["Convite copiado. Cole no navegador ou no Discord."]="Invite copied. Paste it in your browser or Discord.",
+        ["Key invalida."]="Invalid key.",["Key revogada."]="Key revoked.",["Sua key expirou."]="Your key has expired.",
+        ["Sessao invalidada ou servidor reiniciado. Valide a key novamente."]="Session invalidated or server restarted. Validate your key again.",
+        ["Dispositivo ou vinculo alterado. Valide manualmente; para trocar de aparelho, use /resethwid no Discord."]="Device or binding changed. Validate manually; to switch devices, use /resethwid in Discord.",
+        ["Muitas tentativas. Aguarde um minuto."]="Too many attempts. Wait one minute.",
+        ["Este jogo ainda nao tem uma hub cadastrada e ativa."]="This game does not have an active supported hub yet.",
+        ["Sua key nao inclui acesso a esta hub. Consulte a equipe no Discord."]="Your key does not include this hub. Contact the team in Discord.",
+        ["O servidor nao conseguiu salvar. Tente novamente em instantes."]="The server could not save. Try again shortly.",
+        ["O servidor demorou para responder. Tente validar novamente."]="The connection timed out. Please try validating again.",
+        ["A conexao expirou. Tente validar novamente."]="The connection timed out. Please try validating again.",
+        ["Requisicao cancelada."]="Request canceled.",
+        ["Resposta temporariamente invalida do servidor. Tente novamente."]="Temporarily invalid server response. Please try again.",
+        ["A confirmacao da sessao venceu ou mudou. Valide manualmente para continuar."]="Session confirmation expired or changed. Validate manually to continue.",
+        ["Clique em Validar e entrar uma vez para confirmar o vinculo deste loader atualizado."]="Click Validate and enter once to confirm the binding for this updated loader.",
+        ["Conectando ao servidor de licencas..."]="Connecting to the license server...",
+        ["Aguardando o jogo e o personagem carregarem..."]="Waiting for the game and character to load...",
+        ["O jogo ainda nao terminou de carregar. Tente validar novamente."]="The game has not finished loading. Please try validating again.",
+        ["Licenca validada. Carregando a hub..."]="License validated. Loading the hub...",
+        ["Key salva encontrada. Validando automaticamente..."]="Saved key found. Validating automatically...",
+        ["Nao foi possivel ler uma key salva. Cole a key para continuar."]="Could not read a saved key. Paste your key to continue.",
+        ["Cole a key completa no formato XXXX-XXXX-XXXX-XXXX."]="Paste the complete key in XXXX-XXXX-XXXX-XXXX format.",
+        ["Sessao encerrada. Valide a key novamente."]="Session ended. Validate your key again.",
+        ["Autorizacao vencida sem renovacao. Valide sua key novamente."]="Authorization expired without renewal. Validate your key again.",
+        ["Falha ao carregar. Confira os arquivos locais e o servidor."]="Loading failed. Check local files and the server.",
+        ["Nao foi possivel validar. Verifique o servidor e tente novamente."]="Could not validate. Check the connection and try again.",
+        ["Nao foi possivel baixar a hub. Verifique a conexao e tente novamente."]="Could not download the hub. Check your connection and try again.",
+        ["Atualize o servidor para a versao MultiJogos ou tente novamente."]="Update the server to the MultiGames version or try again.",
+        ["Publique o runtime licenciado no servidor. O codigo atual ainda nao e compativel."]="Publish the licensed runtime on the server. The current code is not compatible yet.",
+        ["Resposta recebida nao e um runtime licenciado. Confira a publicacao no servidor."]="The received response is not a licensed runtime. Check the server publication.",
+        ["A inicializacao demorou demais. Tente novamente com o jogo carregado."]="Initialization timed out. Try again once the game has loaded.",
+        ["Nao foi possivel salvar a key para continuidade por teleporte."]="Could not save the key for teleport continuity.",
+        ["Falha ao baixar novamente a hub. Confira a conexao."]="Could not download the hub again. Check your connection.",
+        ["A hub recebida continua com erro de compilacao apos 3 tentativas. Detalhes: VykronHub/loader-error.json."]="The hub still fails to compile after 3 attempts. Details: VykronHub/loader-error.json.",
+        ["Falha na validacao da sessao. Valide sua key novamente."]="Session validation failed. Validate your key again.",
+        ["Nao foi possivel recuperar a sessao. Valide manualmente."]="Could not recover the session. Validate manually.",
+        ["Nao foi possivel recuperar a sessao por falha de conexao. Tente novamente."]="Could not recover the session due to a connection failure. Try again.",
+        ["Atualize o servidor de keys e valide manualmente uma vez para habilitar a recuperacao automatica."]="Update the key server and validate manually once to enable automatic recovery.",
+        ["Atualize o servidor de keys para habilitar a recuperacao automatica."]="Update the key server to enable automatic recovery.",
+        ["Executor sem suporte a requisicoes POST."]="This executor does not support POST requests.",
+        ["Executor sem arquivos locais."]="This executor does not support local files.",
+        ["Arquivo de dispositivo invalido. Restaure o arquivo ou use /resethwid."]="Invalid device file. Restore it or use /resethwid.",
+        ["Falha ao gerar identificador"]="Could not generate a device identifier",
+        ["Nao foi possivel salvar o dispositivo"]="Could not save the device identifier",
+    }
+    local fragments={
+        {"Identificando o jogo","Identifying the game"},{"Validando a key","Validating your key"},
+        {"Carregando a hub","Loading the hub"},{"Conectando","Connecting"},{" · tentativa "," · attempt "},
+        {"Conexao temporariamente indisponivel. Nova tentativa em ","Connection temporarily unavailable. Retrying in "},
+        {"Falha ao compilar a hub. Baixando novamente · tentativa ","Hub compilation failed. Downloading again · attempt "},
+        {"Erro ao iniciar: ","Startup error: "},{" | Detalhes: "," | Details: "},
+    }
+    local function translate(value)
+        if english[value] then return english[value] end
+        for _,pair in ipairs(fragments) do
+            local escaped=pair[1]:gsub("(%W)","%%%1")
+            value=value:gsub(escaped,function() return pair[2] end)
+        end
+        return value
+    end
+    local language=preferences.language=="PT" and "PT" or "EN"
+    local originals=setmetatable({},{__mode="k"})
+    local writing=false
+    local api={translate=translate}
+    local function render(node)
+        local record=originals[node];if not record then return end
+        writing=true
+        record.rendered=language=="EN" and translate(record.original) or record.original
+        node[record.property]=record.rendered
+        writing=false
+    end
+    local function bind(node)
+        if originals[node] then return end
+        local property=node:IsA("TextBox") and "PlaceholderText" or (node:IsA("TextLabel") or node:IsA("TextButton")) and "Text"
+        if not property or node:GetAttribute("LoaderLanguageSelector") then return end
+        originals[node]={property=property,original=node[property]}
+        node:GetPropertyChangedSignal(property):Connect(function()
+            if writing or node[property]==originals[node].rendered then return end
+            originals[node].original=node[property];render(node)
+        end)
+        render(node)
+    end
+    function api.set(value)
+        language=value=="PT" and "PT" or "EN";preferences.language=language
+        for node in pairs(originals) do render(node) end
+        if api.onChange then api.onChange(language) end
+        if persist then pcall(persist,preferences) end
+    end
+    function api.get() return language end
+    for _,node in ipairs(root:GetDescendants()) do bind(node) end
+    root.DescendantAdded:Connect(bind)
+    return api
+end
+-- END LOADER LOCALE
+
+local languageButton=create("TextButton",panel,{Name="LoaderLanguage",Position=UDim2.fromOffset(336,27),Size=UDim2.fromOffset(54,28),
+    Text="EN ▾",BackgroundColor3=Color3.fromRGB(12,34,50),TextColor3=cyan,Font=Enum.Font.GothamBold,TextSize=12,BorderSizePixel=0})
+languageButton:SetAttribute("LoaderLanguageSelector",true);round(languageButton,6)
+local locale=installLoaderLocale(gui,preferences,function(value) writefile("VykronHub/loader-ui.json",Http:JSONEncode(value)) end)
+locale.onChange=function(language) languageButton.Text=language.." ▾" end
+languageButton.Text=locale.get().." ▾"
+languageButton.Activated:Connect(function() locale.set(locale.get()=="EN" and "PT" or "EN") end)
+env.__VykronHubLoaderLocale=locale
+
 local function show(message)
     if not gui.Parent then return end
     gui.Enabled = true
@@ -441,19 +576,28 @@ end
 local function post(route, body, canContinue)
     local startedAt = os.clock()
     local done, abandoned, ok, response = false, false, nil, nil
+    local activeTransport
     local worker = task.spawn(function()
-        local success, value = pcall(requestHttp, {Url = BASE .. route, Method = "POST",
-            Headers = {["Content-Type"] = "application/json", Accept = "application/json, text/plain"},
-            Body = Http:JSONEncode(body)})
-        if not abandoned then ok, response, done = success, value, true end
+        local success,value=false,nil
+        for _,entry in ipairs(transports) do
+            if abandoned then return end
+            activeTransport=entry.name
+            success,value=pcall(entry.fn,{Url=BASE..route,Method="POST",
+                Headers={["Content-Type"]="application/json",Accept="application/json, text/plain"},Body=Http:JSONEncode(body)})
+            if success and type(value)=="table" then break end
+            -- Only unsupported/throwing transports fall back. HTTP auth errors never do.
+        end
+        if not abandoned then ok,response,done=success,value,true end
     end)
     while not done and os.clock() - startedAt < 40 and loaderPresent() and (not canContinue or canContinue()) do task.wait(0.1) end
     if not done then
         abandoned = true
         pcall(task.cancel, worker)
-        return 0, {erro = "REDE_TIMEOUT"}, nil, startedAt
+        local canceled=not loaderPresent() or canContinue and not canContinue()
+        networkNote(route,canceled and "canceled" or "timeout",activeTransport,startedAt,0)
+        return 0,{erro=canceled and "REDE_CANCELADA" or "REDE_TIMEOUT"},nil,startedAt
     end
-    if not ok or type(response) ~= "table" then return 0, nil, nil, startedAt end
+    if not ok or type(response) ~= "table" then networkNote(route,"transport-failed",activeTransport,startedAt,0);return 0,nil,nil,startedAt end
     local code = tonumber(response.StatusCode or response.Status) or 0
     local raw = response.Body
     local decoded
@@ -462,10 +606,12 @@ local function post(route, body, canContinue)
         if parsed and type(value) == "table" then decoded = value end
     end
     if code == 200 and route ~= "/v1/script" and type(decoded) ~= "table" then
+        networkNote(route,"invalid-response",activeTransport,startedAt,code)
         return 0, {erro = "RESPOSTA_INVALIDA"}, nil, startedAt
     end
     local headers = response.Headers or {}
     local retryAfter = tonumber(headers["Retry-After"] or headers["retry-after"])
+    networkNote(route,"response",activeTransport,startedAt,code)
     return code, decoded, raw, startedAt, retryAfter
 end
 -- END LOADER TRANSPORT
@@ -477,7 +623,8 @@ local messages = {
     JOGO_NAO_SUPORTADO = "Este jogo ainda nao tem uma hub cadastrada e ativa.",
     HUB_SEM_ACESSO = "Sua key nao inclui acesso a esta hub. Consulte a equipe no Discord.",
     FALHA_AO_SALVAR = "O servidor nao conseguiu salvar. Tente novamente em instantes.",
-    REDE_TIMEOUT = "O servidor demorou para responder. Tente validar novamente.",
+    REDE_TIMEOUT = "A conexao expirou. Tente validar novamente.",
+    REDE_CANCELADA = "Requisicao cancelada.",
     RESPOSTA_INVALIDA = "Resposta temporariamente invalida do servidor. Tente novamente.",
     RECUPERACAO_INVALIDA = "A confirmacao da sessao venceu ou mudou. Valide manualmente para continuar.",
     VALIDACAO_MANUAL = "Clique em Validar e entrar uma vez para confirmar o vinculo deste loader atualizado.",

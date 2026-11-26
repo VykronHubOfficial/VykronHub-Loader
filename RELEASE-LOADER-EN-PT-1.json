@@ -1,0 +1,17 @@
+{
+  "version": "LOADER-EN-PT-TEST1",
+  "sha256": "fc0a16ffdf5852dccb94f4a564c74e410579cf2f3a4284457fe7810f6e52e2f7",
+  "compiledOuterAndInner": true,
+  "tests": "PASS 21 loader locale/transport checks",
+  "activeChanged": false,
+  "published": true,
+  "publicTestCommit": "9bc54f7a7515c12e8e42be0fc657582beef81923",
+  "normalLoaderUnchanged": "a8331205b0f5f6e2f97e64dcaef963bddb654ade",
+  "activeScriptUnchanged": "7cbc4175aaeba29e7999432a41e835e04eb41734",
+  "privateSourcesCommit": "fe800dd48ebdc20a0dd75b9ddd920dae48aec8f0",
+  "activePublished": true,
+  "previousLoaderCommit": "a8331205b0f5f6e2f97e64dcaef963bddb654ade",
+  "runtimeUnchanged": "7cbc4175aaeba29e7999432a41e835e04eb41734",
+  "teamConflictFixed": false,
+  "reconnectFixed": false
+}
