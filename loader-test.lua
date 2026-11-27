@@ -1,4 +1,4 @@
--- Licensed TEST75 bootstrap; preserves the normal key flow and installs local test continuity.
+-- Licensed TEST77 bootstrap; preserves the normal key flow and installs local test continuity.
 local env=getgenv()
 local function licensed()
     local ok,result=pcall(function() return env.__VykronHubLicense and env.__VykronHubLicense:isValid() end)
@@ -12,12 +12,12 @@ repeat task.wait(0.25) until licensed() and env.__VykronHub and env.__VykronHub.
 assert(licensed(),"Ative sua key no loader normal para abrir o teste.")
 assert(type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function","O executor precisa suportar arquivos para continuar o teste apos teleportes.")
 for _,path in ipairs({"VykronHub","VykronHub/Tests"}) do pcall(makefolder,path) end
-local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/645f9ec8a3319cc400210263cc04a23a95ea4fd9/"
+local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/test-quests/"
 local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test68")
-assert(runtime:find("VYKRON-LABYRINTH-CHECKPOINTS-2.0-TEST75-20261126",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
+assert(runtime:find("VYKRON-WORLD-BOSS-ARCH-REPLAY-2.0-TEST77-20261127",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
 local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test68")
-assert(starter:find("TEST75",1,true),"Starter de teste ainda nao atualizado.")
+assert(starter:find("TEST77",1,true),"Starter de teste ainda nao atualizado.")
 writefile("VykronHub/Tests/Arise-2.0-test68.lua",runtime)
 writefile("VykronHub/Tests/Iniciar-teste-2.0-test68.lua",starter)
 assert(loadstring(starter))()
-print("[VykronHub TEST75] Labirinto: submenu de checkpoints nativos liberados. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
+print("[VykronHub TEST77] World Boss com Limit Breaker e replay do Architect. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
