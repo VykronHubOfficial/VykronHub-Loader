@@ -1,4 +1,4 @@
--- Licensed TEST78 bootstrap; preserves the normal key flow and installs local test continuity.
+-- Licensed TEST79 bootstrap; preserves the normal key flow and installs local test continuity.
 local env=getgenv()
 local function licensed()
     local ok,result=pcall(function() return env.__VykronHubLicense and env.__VykronHubLicense:isValid() end)
@@ -12,12 +12,12 @@ repeat task.wait(0.25) until licensed() and env.__VykronHub and env.__VykronHub.
 assert(licensed(),"Ative sua key no loader normal para abrir o teste.")
 assert(type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function","O executor precisa suportar arquivos para continuar o teste apos teleportes.")
 for _,path in ipairs({"VykronHub","VykronHub/Tests"}) do pcall(makefolder,path) end
-local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/35e5b9659644a95f65c5ecff22a5307c851df359/"
+local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/test-quests/"
 local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test68")
-assert(runtime:find("VYKRON-KAMISH-REFILL-TEAMS-2.0-TEST78-20261127",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
+assert(runtime:find("VYKRON-TEAM-INPUT-RECOVERY-2.0-TEST79-20261128",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
 local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test68")
-assert(starter:find("TEST78",1,true),"Starter de teste ainda nao atualizado.")
+assert(starter:find("TEST79",1,true),"Starter de teste ainda nao atualizado.")
 writefile("VykronHub/Tests/Arise-2.0-test68.lua",runtime)
 writefile("VykronHub/Tests/Iniciar-teste-2.0-test68.lua",starter)
 assert(loadstring(starter))()
-print("[VykronHub TEST78] Kamish usa time da Trial e retorna ao Limit Breaker. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
+print("[VykronHub TEST79] Troca de times: erro de input preservado e recuperacao por confirmacao manual. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
