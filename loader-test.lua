@@ -1,4 +1,4 @@
--- Licensed TEST83 bootstrap; preserves the normal key flow and installs local test continuity.
+-- Licensed TEST84 bootstrap; preserves the normal key flow and installs local test continuity.
 local env=getgenv()
 local function licensed()
     local ok,result=pcall(function() return env.__VykronHubLicense and env.__VykronHubLicense:isValid() end)
@@ -12,12 +12,12 @@ repeat task.wait(0.25) until licensed() and env.__VykronHub and env.__VykronHub.
 assert(licensed(),"Ative sua key no loader normal para abrir o teste.")
 assert(type(writefile)=="function" and type(readfile)=="function" and type(makefolder)=="function","O executor precisa suportar arquivos para continuar o teste apos teleportes.")
 for _,path in ipairs({"VykronHub","VykronHub/Tests"}) do pcall(makefolder,path) end
-local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/7a62634b081059d54dd913ab37ae85e9ff41ffb3/"
+local base="https://raw.githubusercontent.com/VykronHubOfficial/VykronHub-Loader/test-quests/"
 local runtime=game:HttpGet(base.."Arise.lua?v=2.0-test68")
-assert(runtime:find("VYKRON-CRAFT-FARM-STYLE-2.0-TEST83-20261128",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
+assert(runtime:find("VYKRON-ECLIPSE-BLACK-SUN-2.0-TEST84-20261128",1,true),"Runtime de teste ainda nao atualizado; tente novamente.")
 local starter=game:HttpGet(base.."Iniciar-teste.lua?v=2.0-test68")
-assert(starter:find("TEST83",1,true),"Starter de teste ainda nao atualizado.")
+assert(starter:find("TEST84",1,true),"Starter de teste ainda nao atualizado.")
 writefile("VykronHub/Tests/Arise-2.0-test68.lua",runtime)
 writefile("VykronHub/Tests/Iniciar-teste-2.0-test68.lua",starter)
 assert(loadstring(starter))()
-print("[VykronHub TEST83] Craft no visual da Farm e Skill Tree. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
+print("[VykronHub TEST84] Eclipse Black Sun exige os circulos seguros nativos. Mantenha Auto Execute ligado para continuar o teste apos teleportes.")
