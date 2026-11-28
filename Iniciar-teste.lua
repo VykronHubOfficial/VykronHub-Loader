@@ -1,9 +1,9 @@
--- Local Craft TEST80; waits for the normal licensed loader after each teleport.
+-- Local Craft TEST81; waits for the normal licensed loader after each teleport.
 local E=getgenv()
 local P=game:GetService("Players").LocalPlayer
 local Http=game:GetService("HttpService")
-local build="VYKRON-DRAGON-DODGE-REPLAY-2.0-TEST80-20261128"
-local marker="VykronHub/Tests/QuestTest-TEST80-"..P.UserId..".json"
+local build="VYKRON-SKILL-TREE-BLACK-SUN-2.0-TEST81-20261128"
+local marker="VykronHub/Tests/QuestTest-TEST81-"..P.UserId..".json"
 local valid,licensed=pcall(function() return E.__VykronHubLicense:isValid() end)
 assert(valid and licensed,"Execute primeiro o loader normal com sua key valida.")
 if type(E.VykronCraftTestStop)=="function" then E.VykronCraftTestStop() end
@@ -12,7 +12,7 @@ if not h or h.state.build~=build then
     assert(loadstring(readfile("VykronHub/Tests/Arise-2.0-test68.lua")))()
     h=assert(E.__VykronHub)
 end
-assert(h.state.build==build,"TEST80 nao carregada.")
+assert(h.state.build==build,"TEST81 nao carregada.")
 local stopped=false
 local function checkpoint()
     if stopped then return end
@@ -41,7 +41,7 @@ task.spawn(function()
         if not ready then task.wait(0.5) end
     until ready or os.clock()>=deadline
     if not ready then return end
-    local ok,m=pcall(function() return Http:JSONDecode(readfile("VykronHub/Tests/QuestTest-TEST80-"..P.UserId..".json")) end)
+    local ok,m=pcall(function() return Http:JSONDecode(readfile("VykronHub/Tests/QuestTest-TEST81-"..P.UserId..".json")) end)
     if not ok or type(m)~="table" or m.userId~=P.UserId or m.armed~=true or type(m.expires)~="number" or m.expires<os.time() then return end
     -- Preserve the test-owned Craft and quest intent across the normal bootstrap. Restore
     -- these fields across its normal bootstrap; retain all other live preferences.
@@ -62,4 +62,4 @@ if E.__VykronCraftTestQueued~=build and type(queue)=="function" then
     local ok=pcall(queue,continuation)
     if ok then E.__VykronCraftTestQueued=build end
 end
-print("[VykronHub] TEST80: Dragon Monarch: detector do Auto Dodge e replay nativo imediato. Auto Execute mantem o teste apos teleportes.")
+print("[VykronHub] TEST81: Skill Tree Sword/Shadows e protecao Black Sun do Dragon. Auto Execute mantem o teste apos teleportes.")
